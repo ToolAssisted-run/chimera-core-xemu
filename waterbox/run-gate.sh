@@ -75,6 +75,7 @@ fail=0
 for i in A B; do
 	XEMU_BASE_PATH="$run" CHIMERA_FRAMES="$frames" \
 		CHIMERA_STATE_OUT="$run/state-nat-$i.bin" \
+		CHIMERA_AUDIO_OUT="$run/audio-nat-$i.s16" \
 		timeout 590 "$nat" -config_path "$run/xemu.toml" $QEMU_ARGS \
 		> "$run/leg-nat-$i.log" 2>&1 || { echo "native leg $i died"; tail -3 "$run/leg-nat-$i.log"; fail=1; }
 done
@@ -91,11 +92,25 @@ timeout 590 "$runwbx" "$wbx" \
 	--hdd "$fw/Hard Disk/xbox_hdd.qcow2" \
 	${XBOX_DVD_PATH:+--dvd "$XBOX_DVD_PATH"} \
 	--frames "$frames" --state-out "$run/state-wbx.bin" \
+	--audio-out "$run/audio-wbx.s16" \
 	> "$run/leg-wbx.log" 2>&1 || { echo "sandbox leg died"; tail -3 "$run/leg-wbx.log"; fail=1; }
 if cmp -s "$run/state-nat-A.bin" "$run/state-wbx.bin"; then
 	echo "PASS: native == sandbox at $frames frames ($(stat -c%s "$run/state-wbx.bin") bytes of state)"
 else
 	echo "FAIL: native and sandbox states differ"; fail=1
+fi
+
+# The audio leg: the APU monitor's sample stream is machine output; the two
+# native runs and the sandbox must produce the same bytes, and a boot that
+# reached the dashboard jingle must produce actual sound.
+if ! cmp -s "$run/audio-nat-A.s16" "$run/audio-nat-B.s16"; then
+	echo "FAIL: native audio streams differ"; fail=1
+elif ! cmp -s "$run/audio-nat-A.s16" "$run/audio-wbx.s16"; then
+	echo "FAIL: native and sandbox audio differ"; fail=1
+elif [ "$frames" -ge 600 ] && ! LC_ALL=C grep -qm1 "[^\\x00]" "$run/audio-nat-A.s16"; then
+	echo "FAIL: audio is pure silence"; fail=1
+else
+	echo "PASS: audio leg - $(stat -c%s "$run/audio-wbx.s16") bytes, native == sandbox"
 fi
 
 # The savestate leg: 60 sandbox frames with the arena saved and reloaded

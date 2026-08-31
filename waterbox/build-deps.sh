@@ -18,15 +18,12 @@ mkdir -p "$src" "$deps"
 ZLIB=zlib-1.3.1
 GLIB=glib-2.84.4
 PIXMAN=pixman-0.46.2
-SRC_RATE=libsamplerate-0.2.2
 ZLIB_URL="https://github.com/madler/zlib/releases/download/v1.3.1/$ZLIB.tar.gz"
 GLIB_URL="https://download.gnome.org/sources/glib/2.84/$GLIB.tar.xz"
 PIXMAN_URL="https://cairographics.org/releases/$PIXMAN.tar.gz"
 ZLIB_SHA=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
 GLIB_SHA=8a9ea10943c36fc117e253f80c91e477b673525ae45762942858aef57631bb90
 PIXMAN_SHA=3e0de5ba6e356916946a3d958192f15505dcab85134771bfeab4ce4e29bbd733
-SRC_RATE_URL="https://github.com/libsndfile/libsamplerate/releases/download/0.2.2/$SRC_RATE.tar.xz"
-SRC_RATE_SHA=3258da280511d24b49d6b08615bbe824d0cacc9842b0e4caf11c52cf2b043893
 
 fetch() { # fetch <file> <url> <sha256>
 	f="$src/$1"
@@ -37,7 +34,6 @@ fetch() { # fetch <file> <url> <sha256>
 fetch "$ZLIB.tar.gz" "$ZLIB_URL" "$ZLIB_SHA"
 fetch "$GLIB.tar.xz" "$GLIB_URL" "$GLIB_SHA"
 fetch "$PIXMAN.tar.gz" "$PIXMAN_URL" "$PIXMAN_SHA"
-fetch "$SRC_RATE.tar.xz" "$SRC_RATE_URL" "$SRC_RATE_SHA"
 
 # the guest compile flags for the non-meson build (zlib): pull them out of the
 # cross file so there is exactly one place that defines them
@@ -83,15 +79,6 @@ else
 	echo "pixman: present"
 fi
 
-# ---- libsamplerate (the MCPX APU resamples voices through it) ----------
-if [ ! -f "$deps/lib/libsamplerate.a" ]; then
-	rm -rf "$src/$SRC_RATE" && tar -C "$src" -xJf "$src/$SRC_RATE.tar.xz"
-	( cd "$src/$SRC_RATE" && CC=gcc CFLAGS="$cflags" ./configure --disable-shared --enable-static --prefix="$deps" --host=x86_64-linux-musl --build=x86_64-pc-linux-gnu >/dev/null \
-		&& make -j"$(nproc)" >/dev/null 2>&1 && make install >/dev/null 2>&1 )
-	echo "libsamplerate: installed"
-else
-	echo "libsamplerate: present"
-fi
 
 # ---- Linux UAPI headers ----------------------------------------------------
 # QEMU includes <linux/futex.h> and friends; the musl sysroot carries none.

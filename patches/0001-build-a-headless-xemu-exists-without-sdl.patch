@@ -37,10 +37,10 @@ index 3429547e24..aa123c592b 100644
  )
  
 diff --git a/hw/xbox/mcpx/apu/meson.build b/hw/xbox/mcpx/apu/meson.build
-index 9b161a900b..80d289a377 100644
+index 9b161a900b..ce865c8993 100644
 --- a/hw/xbox/mcpx/apu/meson.build
 +++ b/hw/xbox/mcpx/apu/meson.build
-@@ -1,8 +1,11 @@
+@@ -1,7 +1,19 @@
 -mcpx_ss.add(sdl, files(
 +# CHIMERA: the APU is machine hardware and compiles in every build; only the
 +# audio sink (monitor.c, SDL) is host-facing. Headless builds get the null
@@ -49,11 +49,19 @@ index 9b161a900b..80d289a377 100644
  	'apu.c',
  	'debug.c',
 -	'monitor.c',
- 	))
++	))
 +mcpx_ss.add(when: sdl, if_true: files('monitor.c'), if_false: files('monitor-null.c'))
++# CHIMERA: deterministic powf/pow for the VP's sample math (see det-pow.c)
++mcpx_ss.add(files('det-pow.c'))
++# CHIMERA: the vendored resampler (see samplerate/config.h for why)
++mcpx_ss.add(libsamplerate, files(
++	'samplerate/samplerate.c',
++	'samplerate/src_sinc.c',
++	'samplerate/src_linear.c',
++	'samplerate/src_zoh.c',
+ 	))
  
  subdir('vp')
- subdir('dsp')
 diff --git a/hw/xbox/meson.build b/hw/xbox/meson.build
 index 8cf1ea0bb7..05812b79c5 100644
 --- a/hw/xbox/meson.build
@@ -118,7 +126,7 @@ index fbc3751ea7..550ee26d01 100644
 +gloffscreen = not_found
 +endif
 diff --git a/meson.build b/meson.build
-index 82e5f5af65..b67a9d15d6 100644
+index 82e5f5af65..9c40dd3294 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -1462,7 +1462,9 @@ endif
@@ -156,7 +164,7 @@ index 82e5f5af65..b67a9d15d6 100644
  endif
  
  if vulkan.found()
-@@ -2432,11 +2436,14 @@ if host_os == 'windows'
+@@ -2432,11 +2436,20 @@ if host_os == 'windows'
    libpcap = declare_dependency(include_directories: 'winpcap-loader/include',
                                 link_args: ['-lws2_32'])
  else
@@ -165,14 +173,21 @@ index 82e5f5af65..b67a9d15d6 100644
 +  libpcap = dependency('libpcap', method: 'pkg-config', required: sdl.found())
  endif
  
- libsamplerate = dependency('samplerate', method: 'pkg-config', required: true)
+-libsamplerate = dependency('samplerate', method: 'pkg-config', required: true)
++# CHIMERA: the resampler is vendored (hw/xbox/mcpx/apu/samplerate) so the
++# native reference and the guest compile the SAME code with the SAME flags -
++# an external build rounds samples one ULP differently and fails the audio
++# determinism gate.
++libsamplerate = declare_dependency(
++  include_directories: include_directories('hw/xbox/mcpx/apu/samplerate'),
++  compile_args: ['-DHAVE_CONFIG_H'])
  
 +# CHIMERA: the imgui HUD exists only when the SDL UI does
 +if sdl.found()
  imgui_proj = subproject('imgui', required: true,
                           default_options: [
                             'default_library=static',
-@@ -2462,6 +2469,10 @@ imgui = imgui_proj.get_variable('imgui_dep')
+@@ -2462,6 +2475,10 @@ imgui = imgui_proj.get_variable('imgui_dep')
  implot_proj = subproject('implot', required: true,
                           default_options: ['default_library=static'])
  implot = implot_proj.get_variable('implot_dep')
@@ -183,7 +198,7 @@ index 82e5f5af65..b67a9d15d6 100644
  
  genconfig_proj = subproject('genconfig', required: true)
  genconfig = genconfig_proj.get_variable('cnode_dep')
-@@ -2704,6 +2715,7 @@ config_host_data.set('CONFIG_RDMA', rdma.found())
+@@ -2704,6 +2721,7 @@ config_host_data.set('CONFIG_RDMA', rdma.found())
  config_host_data.set('CONFIG_RELOCATABLE', get_option('relocatable'))
  config_host_data.set('CONFIG_SAFESTACK', get_option('safe_stack'))
  config_host_data.set('CONFIG_SDL', sdl.found())

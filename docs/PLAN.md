@@ -147,6 +147,62 @@ The rest of M2, all gated by `XBOX_DVD_PATH=... run-gate.sh 1200`:
   saves and reloads the state around EVERY frame and the machine is
   byte-identical to the plain run (the gate's savestate leg, 60 frames).
 
+## M3 status: audio - the machine makes sound, gated byte for byte
+
+GetAudio/GetAudioSampleCount export interleaved s16 stereo pairs at 48kHz;
+waterbox/monitor-null.c accumulates the APU monitor's EP frames (256 pairs
+each) and the driver drains the accumulator per video frame. The dashboard
+boot jingle comes out as real samples (peak ~10000, seven seconds with the
+fade, then menu ambience). The gate's audio leg requires native A == B ==
+sandbox on the whole sample stream and refuses pure silence past 600
+frames. run-wbx --audio-out / native CHIMERA_AUDIO_OUT dump the stream.
+
+What it took, beyond M1's virtual-clock APU (patch 0004 + 0002):
+
+13. The vframe tick was 8x too slow: se_frame mixes a 32-sample VP
+    sub-frame and eight of them make one 256-sample EP frame - upstream's
+    thread throttles only when ep_frame_div hits a multiple of 8, so the
+    virtual timer must tick every EP_FRAME_US/8 (666.6us), not every
+    EP_FRAME_US. This also puts NV_PAPU_XGSCNT (ep_frame_div * 32, the
+    guest-visible 48kHz timebase) at the right rate.
+14. pause_requested stayed true forever: realize sets it, and only the SDL
+    thread's resume path cleared it - headless, voice_work_dispatch
+    silently dropped its queue every frame, which is why every voice
+    "played" but produced nothing. wait_for_idle/resume now track the flag
+    (they are called from the vm-state-change handler), so voice work runs
+    exactly while the machine runs.
+15. The locked-voice wait would livelock: voice_work_dispatch runs in
+    virtual-timer context on the vCPU thread with the BQL held, and
+    upstream's 1ms cond_timedwait waits for the guest to unlock a voice -
+    the guest that cannot run because we hold its thread. A voice locked
+    at the tick instant means the guest is mid-update: the VP frame is
+    skipped deterministically (lock state is machine state).
+
+16. 94 samples in 24 seconds came out one LSB apart between native and
+    sandbox while machine state stayed byte-identical (the monitor tap
+    never feeds back). The real culprit, found by printing MXCSR at the
+    divergence: xemu's TCG SSE helpers execute the GUEST's ldmxcsr on the
+    HOST, so when the game programs round-toward-zero, the emulator's own
+    float math inherits it - on whichever host thread runs guest code.
+    Natively the APU work sat on a thread the guest never touched; in the
+    sandbox the green threads share one host FPU, and the audio math
+    started rounding the way the game likes at the exact virtual instant
+    the game set its FPU up. apu_vframe_tick now pins the default MXCSR
+    (0x1f80) for the mixer and hands the guest's value back afterwards.
+    Two related hardenings landed on the way to finding it, and stay:
+    hw/xbox/mcpx/apu/det-pow.c gives both builds the SAME powf/pow
+    (musl's, verified 0 ULP vs glibc powf over 2M inputs - glibc/musl
+    genuinely differ by a ULP on double pow), and libsamplerate 0.2.2 is
+    vendored into the tree (samplerate/, SINC_FASTEST only) so the
+    resampler is one TU compiled by both builds instead of two library
+    builds with two compilers' ideas of the same arithmetic.
+
+Boot lore that fell out of the debugging: the game never hung at all - the
+"stall" at frame ~490 is the dashboard's boot animation ending, and Prince
+of Persia's intro FMV plays through the PVIDEO overlay (live overlay regs,
+steady 2-3MB/s DVD streaming), which neither pgraph flips nor the VGA
+scanout show. Overlay composition arrives with the GPU bridge (M4).
+
 ## The native determinism story (still true, prerequisite)
 
 `waterbox/run-determinism-native.sh N` boots the real firmware (MCPX 1.0 +

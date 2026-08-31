@@ -25,10 +25,52 @@ index ff13d42994..28bf7ded5d 100644
          McpxApuDebugMonitorPoint point;
          int16_t frame_buf[256][2]; // 1 EP frame (0x400 bytes)
 diff --git a/hw/xbox/mcpx/apu/vp/vp.c b/hw/xbox/mcpx/apu/vp/vp.c
-index c57ecb634f..a90f9df920 100644
+index c57ecb634f..bd80b82ff7 100644
 --- a/hw/xbox/mcpx/apu/vp/vp.c
 +++ b/hw/xbox/mcpx/apu/vp/vp.c
-@@ -1768,7 +1768,13 @@ static void voice_work_init(MCPXAPUState *d)
+@@ -22,6 +22,14 @@
+ #include "hw/xbox/mcpx/apu/apu_int.h"
+ #include "adpcm.h"
+ 
++/* CHIMERA: sample math must round identically in the native reference and
++ * the guest; glibc and musl powf/pow differ by a ULP on a few inputs, so
++ * both builds use the copies in ../det-pow.c (musl's own implementation). */
++extern float chimera_powf(float x, float y);
++extern double chimera_pow(double x, double y);
++#define powf chimera_powf
++#define pow chimera_pow
++
+ static const struct {
+     hwaddr top, current, next;
+ } voice_list_regs[] = {
+@@ -1725,6 +1733,18 @@ voice_work_dispatch(MCPXAPUState *d,
+ 
+     int64_t start_time = qemu_clock_get_us(QEMU_CLOCK_REALTIME);
+ 
++#ifndef CONFIG_SDL
++    /* CHIMERA: this runs in virtual-timer context on the vCPU thread with
++     * the BQL held - waiting for the guest to unlock a voice would block
++     * the very thread that has to do the unlocking. A voice locked at this
++     * exact virtual instant is the guest mid-update; skipping the whole VP
++     * frame is deterministic (lock state is machine state) and inaudible.
++     */
++    if (qatomic_read(&d->pause_requested) || any_queued_voice_locked(d)) {
++        vwd->queue_len = 0;
++        return;
++    }
++#else
+     while (true) {
+         if (qatomic_read(&d->pause_requested)) {
+             vwd->queue_len = 0;
+@@ -1737,6 +1757,7 @@ voice_work_dispatch(MCPXAPUState *d,
+ 
+         qemu_cond_timedwait(&d->cond, &d->lock, 1);
+     }
++#endif
+ 
+     qemu_mutex_lock(&vwd->lock);
+ 
+@@ -1768,7 +1789,13 @@ static void voice_work_init(MCPXAPUState *d)
  {
      VoiceWorkDispatch *vwd = &d->vp.voice_work_dispatch;
  

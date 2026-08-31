@@ -80,6 +80,7 @@ int main(int argc, char **argv)
     const char *wbx = 0, *mcpx = 0, *bios = 0, *eeprom = 0, *hdd = 0, *dvd = 0;
     const char *stateOut = 0;
     const char *videoOut = 0;
+    const char *audioOut = 0;
     long frames = 60;
     int press_port = -1, press_from = 0, press_to = 0;
     unsigned press_mask = 0;
@@ -94,6 +95,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = strtol(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--state-out") && i + 1 < argc) stateOut = argv[++i];
         else if (!strcmp(argv[i], "--video-out") && i + 1 < argc) videoOut = argv[++i];
+        else if (!strcmp(argv[i], "--audio-out") && i + 1 < argc) audioOut = argv[++i];
         else if (!strcmp(argv[i], "--press") && i + 1 < argc) {
             if (sscanf(argv[++i], "%d:%x:%d:%d", &press_port, &press_mask,
                        &press_from, &press_to) != 4) {
@@ -155,6 +157,14 @@ int main(int argc, char **argv)
     if (r.error_message[0]) { fprintf(stderr, "seal: %s\n", r.error_message); return 1; }
     wbx_activate_host(h, &r);
 
+    bytesfn GetAudio = (bytesfn)proc(h, "GetAudio");
+    intfn GetAudioSampleCount = (intfn)proc(h, "GetAudioSampleCount");
+    FILE *af = NULL;
+    if (audioOut) {
+        af = fopen(audioOut, "wb");
+        if (!af) { fprintf(stderr, "cannot write %s\n", audioOut); return 1; }
+    }
+
     membuf st = { 0 };
     for (long i = 0; i < frames; i++) {
         if (rerecord) {
@@ -170,6 +180,13 @@ int main(int argc, char **argv)
             packed = (uint64_t)press_mask << (press_port * 14);
         }
         FrameAdvance(packed);
+        if (af) {
+            fwrite(GetAudio(), 4, (size_t)GetAudioSampleCount(), af);
+        }
+    }
+    if (af) {
+        fclose(af);
+        fprintf(stderr, "run-wbx: audio written to %s\n", audioOut);
     }
     fprintf(stderr, "run-wbx: ran %ld frames\n", frames);
 

@@ -213,6 +213,11 @@ void xemu_snapshots_mark_dirty(void)
 {
 }
 
+/* ---- audio: the APU monitor accumulator (waterbox/monitor-null.c) ------- */
+
+extern int16_t chimera_audio_buf[];
+extern int chimera_audio_count;
+
 /* ---- the frame loop ------------------------------------------------------ */
 
 #define VBLANK_NS 16666667 /* NTSC field; PAL arrives with the vsync work */
@@ -332,16 +337,31 @@ static void run_frames(long frames)
         }
     }
 
+    /* CHIMERA_AUDIO_OUT collects every frame's monitor samples into one raw
+     * s16le stereo file - the native half of the audio gate leg */
+    FILE *audio_out = NULL;
+    const char *audio_path = getenv("CHIMERA_AUDIO_OUT");
+    if (audio_path) {
+        audio_out = fopen(audio_path, "wb");
+    }
+
     for (long i = 0; i < frames; i++) {
         if (press_port >= 0 && press_port < CHIMERA_PORTS) {
             chimera_pads[press_port].buttons =
                 (i >= press_from && i < press_to) ? press_mask : 0;
         }
+        chimera_audio_count = 0;
         run_one_frame();
+        if (audio_out) {
+            fwrite(chimera_audio_buf, 4, chimera_audio_count, audio_out);
+        }
         if (trace) {
             fprintf(stderr, "frame %ld: late %" PRId64 " ns\n", i,
                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - frame_next);
         }
+    }
+    if (audio_out) {
+        fclose(audio_out);
     }
 }
 
@@ -456,7 +476,18 @@ ECL_EXPORT void FrameAdvance(uint64_t packed)
                         ((1u << CHIMERA_BUTTONS) - 1);
         chimera_pads[p].buttons = bits | g_setButtons[p];
     }
+    chimera_audio_count = 0;
     run_one_frame();
+}
+
+ECL_EXPORT int16_t *GetAudio(void)
+{
+    return chimera_audio_buf;
+}
+
+ECL_EXPORT int GetAudioSampleCount(void)
+{
+    return chimera_audio_count;
 }
 
 /* ---- video: the console surface, which VGA scans out of xbox.ram --------

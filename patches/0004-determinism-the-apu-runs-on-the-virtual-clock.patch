@@ -1,5 +1,5 @@
 diff --git a/hw/xbox/mcpx/apu/apu.c b/hw/xbox/mcpx/apu/apu.c
-index 1ee6dc4252..34f612ccb8 100644
+index 1ee6dc4252..a70d108fd7 100644
 --- a/hw/xbox/mcpx/apu/apu.c
 +++ b/hw/xbox/mcpx/apu/apu.c
 @@ -102,6 +102,7 @@ static const MemoryRegionOps mcpx_apu_mmio_ops = {
@@ -53,7 +53,7 @@ index 1ee6dc4252..34f612ccb8 100644
  static void *mcpx_apu_frame_thread(void *arg)
  {
      MCPXAPUState *d = MCPX_APU_DEVICE(arg);
-@@ -301,9 +309,51 @@ static void *mcpx_apu_frame_thread(void *arg)
+@@ -301,9 +309,71 @@ static void *mcpx_apu_frame_thread(void *arg)
      qemu_mutex_unlock(&d->lock);
      return NULL;
  }
@@ -70,6 +70,16 @@ index 1ee6dc4252..34f612ccb8 100644
 +static void apu_vframe_tick(void *opaque)
 +{
 +    MCPXAPUState *d = MCPX_APU_DEVICE(opaque);
++
++    /* The machine's own code programs the FPU rounding mode, and the TCG
++     * SSE helpers apply it to the HOST MXCSR - on the thread this timer
++     * shares with the vCPU. Every float the mixer computes would then
++     * round the way the current game likes. Pin the default environment
++     * for the audio math and hand the guest's back afterwards. */
++    uint32_t guest_mxcsr;
++    __asm__ volatile("stmxcsr %0" : "=m"(guest_mxcsr));
++    uint32_t audio_mxcsr = 0x1f80;
++    __asm__ volatile("ldmxcsr %0" : : "m"(audio_mxcsr));
 +
 +    qemu_mutex_lock(&d->lock);
 +    int xcntmode = GET_MASK(qatomic_read(&d->regs[NV_PAPU_SECTL]),
@@ -88,9 +98,14 @@ index 1ee6dc4252..34f612ccb8 100644
 +    }
 +    qemu_mutex_unlock(&d->lock);
 +
++    __asm__ volatile("ldmxcsr %0" : : "m"(guest_mxcsr));
++
 +    /* absolute deadlines - re-arming off "now" would accumulate callback
-+     * lateness, which is host timing */
-+    d->vframe_next += (int64_t)EP_FRAME_US * 1000;
++     * lateness, which is host timing. se_frame mixes 32 samples (a VP
++     * sub-frame); eight of them make one 256-sample EP frame, so the tick
++     * is an eighth of EP_FRAME_US - the same cadence the SDL thread gets
++     * from throttling only when ep_frame_div hits a multiple of 8. */
++    d->vframe_next += (int64_t)EP_FRAME_US * 1000 / 8;
 +    timer_mod_ns(d->vframe_timer, d->vframe_next);
 +}
 +#endif /* !CONFIG_SDL */
@@ -99,23 +114,30 @@ index 1ee6dc4252..34f612ccb8 100644
  {
 +#ifndef CONFIG_SDL
 +    /* CHIMERA: no frame thread to quiesce - EP frames run from a virtual
-+     * timer, which cannot be mid-frame while we hold the BQL */
++     * timer, which cannot be mid-frame while we hold the BQL. The flag
++     * still gates voice work (voice_work_dispatch drops its queue while
++     * pause is requested), so it must track the machine's run state -
++     * realize leaves it set, and only resume below clears it. */
++    d->pause_requested = true;
++    d->is_idle = true;
 +    return;
 +#endif
      d->pause_requested = true;
      qemu_cond_signal(&d->cond);
      while (!d->is_idle) {
-@@ -313,6 +363,9 @@ static void mcpx_apu_wait_for_idle(MCPXAPUState *d)
+@@ -313,6 +383,11 @@ static void mcpx_apu_wait_for_idle(MCPXAPUState *d)
  
  static void mcpx_apu_resume(MCPXAPUState *d)
  {
 +#ifndef CONFIG_SDL
++    d->pause_requested = false;
++    d->is_idle = false;
 +    return;
 +#endif
      d->pause_requested = false;
      qemu_cond_signal(&d->cond);
  }
-@@ -333,13 +386,17 @@ static void mcpx_apu_reset_hold(Object *obj, ResetType type)
+@@ -333,13 +408,17 @@ static void mcpx_apu_reset_hold(Object *obj, ResetType type)
  {
      MCPXAPUState *d = MCPX_APU_DEVICE(obj);
  
@@ -133,7 +155,7 @@ index 1ee6dc4252..34f612ccb8 100644
  }
  
  // Note: This is handled as a VM state change and not as a `pre_save` callback
-@@ -350,7 +407,9 @@ static void mcpx_apu_vm_state_change(void *opaque, bool running, RunState state)
+@@ -350,7 +429,9 @@ static void mcpx_apu_vm_state_change(void *opaque, bool running, RunState state)
      MCPXAPUState *d = opaque;
  
      if (!running) {
@@ -143,7 +165,7 @@ index 1ee6dc4252..34f612ccb8 100644
          qemu_mutex_lock(&d->lock);
          mcpx_apu_wait_for_idle(d);
          if (d->gp.dsp) {
-@@ -360,7 +419,9 @@ static void mcpx_apu_vm_state_change(void *opaque, bool running, RunState state)
+@@ -360,7 +441,9 @@ static void mcpx_apu_vm_state_change(void *opaque, bool running, RunState state)
              dsp_sync_to_vm(d->ep.dsp);
          }
          qemu_mutex_unlock(&d->lock);
@@ -153,7 +175,7 @@ index 1ee6dc4252..34f612ccb8 100644
      } else {
          qemu_mutex_lock(&d->lock);
          if (d->gp.dsp) {
-@@ -425,9 +486,16 @@ static void mcpx_apu_realize(PCIDevice *dev, Error **errp)
+@@ -425,9 +508,16 @@ static void mcpx_apu_realize(PCIDevice *dev, Error **errp)
      }
  
      qemu_add_vm_change_state_handler(mcpx_apu_vm_state_change, d);
@@ -164,13 +186,13 @@ index 1ee6dc4252..34f612ccb8 100644
 +#else
 +    d->vframe_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, apu_vframe_tick, d);
 +    d->vframe_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-+                     (int64_t)EP_FRAME_US * 1000;
++                     (int64_t)EP_FRAME_US * 1000 / 8;
 +    timer_mod_ns(d->vframe_timer, d->vframe_next);
 +#endif
      qemu_mutex_unlock(&d->lock);
  }
  
-@@ -435,15 +503,23 @@ static void mcpx_apu_exitfn(PCIDevice *dev)
+@@ -435,15 +525,23 @@ static void mcpx_apu_exitfn(PCIDevice *dev)
  {
      MCPXAPUState *d = MCPX_APU_DEVICE(dev);
  
