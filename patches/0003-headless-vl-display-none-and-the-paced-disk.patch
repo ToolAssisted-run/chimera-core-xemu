@@ -1,0 +1,39 @@
+diff --git a/system/vl.c b/system/vl.c
+index f45bdc3458..25eb01075a 100644
+--- a/system/vl.c
++++ b/system/vl.c
+@@ -3066,9 +3066,20 @@ void qemu_init(int argc, char **argv)
+         } else {
+             fake_argv[fake_argc++] = strdup("-drive");
+             char *escaped_hdd_path = strdup_double_commas(hdd_path);
++#ifdef CONFIG_SDL
+             fake_argv[fake_argc++] = g_strdup_printf("index=0,media=disk,file=%s%s",
+                 escaped_hdd_path,
+                 strlen(escaped_hdd_path) > 0 ? ",locked=on" : "");
++#else
++            /* CHIMERA: the disk answers in fixed VIRTUAL time - the one way
++             * an interrupt's position in the instruction stream cannot
++             * depend on how fast the host's storage happened to be */
++            bool hdd_is_qcow2 = g_str_has_suffix(hdd_path, ".qcow2");
++            fake_argv[fake_argc++] = g_strdup_printf(
++                "index=0,media=disk,locked=on,driver=chimera-latency,"
++                "image.driver=%s,image.file.driver=file,image.file.filename=%s",
++                hdd_is_qcow2 ? "qcow2" : "raw", escaped_hdd_path);
++#endif
+             free(escaped_hdd_path);
+         }
+     }
+@@ -3095,7 +3106,13 @@ void qemu_init(int argc, char **argv)
+     free(escaped_dvd_path);
+ 
+     fake_argv[fake_argc++] = strdup("-display");
++#ifdef CONFIG_SDL
+     fake_argv[fake_argc++] = strdup("xemu");
++#else
++    /* CHIMERA: no SDL, no xemu display module - machine output is read out
++     * of the nv2a by the waterbox driver instead */
++    fake_argv[fake_argc++] = strdup("none");
++#endif
+ 
+     // Create USB Daughterboard for 1.0 Xbox. This is connected to Port 1 of the Root hub.
+     fake_argv[fake_argc++] = strdup("-device");

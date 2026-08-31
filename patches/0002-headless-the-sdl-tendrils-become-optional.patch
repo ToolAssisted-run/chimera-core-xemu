@@ -1,0 +1,162 @@
+diff --git a/hw/xbox/mcpx/apu/apu_int.h b/hw/xbox/mcpx/apu/apu_int.h
+index ff13d42994..28bf7ded5d 100644
+--- a/hw/xbox/mcpx/apu/apu_int.h
++++ b/hw/xbox/mcpx/apu/apu_int.h
+@@ -23,7 +23,11 @@
+ 
+ #include "qemu/osdep.h"
+ #include <math.h>
++#ifdef CONFIG_SDL /* CHIMERA: headless builds have no SDL audio sink */
+ #include <SDL3/SDL.h>
++#else
++typedef struct SDL_AudioStream SDL_AudioStream;
++#endif
+ #include "hw/hw.h"
+ #include "hw/pci/pci.h"
+ #include "hw/pci/pci_device.h"
+@@ -115,6 +119,9 @@ typedef struct MCPXAPUState {
+         int queued_bytes_count;
+     } throttle;
+ 
++    QEMUTimer *vframe_timer; /* CHIMERA: the headless EP frame pump */
++    int64_t vframe_next;     /* CHIMERA: its absolute schedule */
++
+     struct {
+         McpxApuDebugMonitorPoint point;
+         int16_t frame_buf[256][2]; // 1 EP frame (0x400 bytes)
+diff --git a/hw/xbox/mcpx/apu/vp/vp.c b/hw/xbox/mcpx/apu/vp/vp.c
+index c57ecb634f..a90f9df920 100644
+--- a/hw/xbox/mcpx/apu/vp/vp.c
++++ b/hw/xbox/mcpx/apu/vp/vp.c
+@@ -1768,7 +1768,13 @@ static void voice_work_init(MCPXAPUState *d)
+ {
+     VoiceWorkDispatch *vwd = &d->vp.voice_work_dispatch;
+ 
++#ifdef CONFIG_SDL
+     int num_workers = g_config.audio.vp.num_workers ?: SDL_GetNumLogicalCPUCores();
++#else
++    /* CHIMERA: a worker count read off the host CPU is a determinism leak;
++     * headless defaults to one worker unless the config says otherwise */
++    int num_workers = g_config.audio.vp.num_workers ?: 1;
++#endif
+     vwd->num_workers = MAX(1, MIN(num_workers, MAX_VOICE_WORKERS));
+     vwd->workers = g_malloc0_n(vwd->num_workers, sizeof(VoiceWorker));
+     vwd->workers_should_exit = false;
+diff --git a/net/net.c b/net/net.c
+index 2609958dc0..4db3fcda31 100644
+--- a/net/net.c
++++ b/net/net.c
+@@ -1308,7 +1308,9 @@ static int (* const net_client_init_fun[NET_CLIENT_DRIVER__MAX])(
+ #ifdef CONFIG_L2TPV3
+         [NET_CLIENT_DRIVER_L2TPV3]    = net_init_l2tpv3,
+ #endif
++#ifdef CONFIG_PCAP /* CHIMERA: pcap netdev rides along only when libpcap does */
+         [NET_CLIENT_DRIVER_PCAP]      = net_init_pcap,
++#endif
+ #ifdef CONFIG_VMNET
+         [NET_CLIENT_DRIVER_VMNET_HOST] = net_init_vmnet_host,
+         [NET_CLIENT_DRIVER_VMNET_SHARED] = net_init_vmnet_shared,
+diff --git a/ui/xemu-input.h b/ui/xemu-input.h
+index 0eb2af9d42..02b80bc622 100644
+--- a/ui/xemu-input.h
++++ b/ui/xemu-input.h
+@@ -25,12 +25,22 @@
+ #ifndef XEMU_INPUT_H
+ #define XEMU_INPUT_H
+ 
+-#include <SDL3/SDL.h>
+ #include <stdbool.h>
+ 
+ #include "qemu/queue.h"
+ #include "xemu-settings.h"
++#ifdef CONFIG_SDL
+ #include <SDL3/SDL.h>
++#else
++/* CHIMERA: headless builds keep ControllerState (xid.c feeds from it) but
++ * have no SDL; the SDL members become inert placeholders of the same size.
++ */
++typedef struct SDL_Gamepad SDL_Gamepad;
++typedef struct SDL_Joystick SDL_Joystick;
++typedef union SDL_Event SDL_Event;
++typedef uint32_t SDL_JoystickID;
++typedef struct SDL_GUID { uint8_t data[16]; } SDL_GUID;
++#endif
+ 
+ #define DRIVER_DUKE "usb-xbox-gamepad"
+ #define DRIVER_S "usb-xbox-gamepad-s"
+diff --git a/ui/xemu-settings.cc b/ui/xemu-settings.cc
+index 5f9148af8a..9315d3d2d9 100644
+--- a/ui/xemu-settings.cc
++++ b/ui/xemu-settings.cc
+@@ -19,7 +19,9 @@
+ 
+ #include "qemu/osdep.h"
+ #include <stdlib.h>
++#ifdef CONFIG_SDL
+ #include <SDL3/SDL_filesystem.h>
++#endif
+ #include <string.h>
+ #include <stddef.h>
+ #include <stdbool.h>
+@@ -31,7 +33,9 @@
+ #include <iostream>
+ #include <locale.h>
+ 
++#ifdef CONFIG_SDL /* CHIMERA: rebinding UI only exists with SDL */
+ #include "xemu-controllers.h"
++#endif
+ #include "xemu-settings.h"
+ 
+ #define DEFINE_CONFIG_TREE
+@@ -48,6 +52,7 @@ const char *xemu_settings_get_error_message(void)
+     return error_msg.length() ? error_msg.c_str() : NULL;
+ }
+ 
++#ifdef CONFIG_SDL
+ static bool xemu_settings_detect_portable_mode(void)
+ {
+     bool val = false;
+@@ -61,6 +66,7 @@ static bool xemu_settings_detect_portable_mode(void)
+     free(portable_path);
+     return val;
+ }
++#endif
+ 
+ void xemu_settings_set_path(const char *path)
+ {
+@@ -77,6 +83,11 @@ const char *xemu_settings_get_base_path(void)
+         return base_path;
+     }
+ 
++#ifndef CONFIG_SDL
++    const char *env_base = getenv("XEMU_BASE_PATH");
++    assert(env_base != NULL && "headless xemu needs XEMU_BASE_PATH");
++    base_path = g_strdup_printf("%s/", env_base);
++#else
+     if (xemu_settings_detect_portable_mode()) {
+         const char *base = SDL_GetBasePath();
+         assert(base != NULL);
+@@ -87,6 +98,7 @@ const char *xemu_settings_get_base_path(void)
+         base_path = g_strdup(base);
+         SDL_free(base);
+     }
++#endif
+     fprintf(stderr, "%s: base path: %s\n", __func__, base_path);
+     return base_path;
+ }
+diff --git a/ui/xemu-snapshots.h b/ui/xemu-snapshots.h
+index 9d793f0ced..0fbdd6ed58 100644
+--- a/ui/xemu-snapshots.h
++++ b/ui/xemu-snapshots.h
+@@ -27,7 +27,11 @@ extern "C" {
+ #endif
+ 
+ #include "block/snapshot.h"
++#ifdef CONFIG_OPENGL
+ #include <epoxy/gl.h>
++#else
++typedef unsigned int GLuint; /* CHIMERA: thumbnail texture ids, unused headless */
++#endif
+ 
+ #define XEMU_SNAPSHOT_DATA_MAGIC 0x78656d75 // 'xemu'
+ #define XEMU_SNAPSHOT_DATA_VERSION 1

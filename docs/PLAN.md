@@ -61,6 +61,54 @@ numbered patches applied to the submodule (the pcsx2 convention).
 - M5: savestates (arena snapshot; audit for host handles), movies, packaging,
   licences (QEMU is GPL-2.0; the bundle addendum follows the dosbox-x model).
 
+## M1 status: the native determinism leg is GREEN (2026-08-31)
+
+`waterbox/run-determinism-native.sh N` boots the real firmware (MCPX 1.0 +
+Complex 4627 + xbox_hdd.qcow2, user-supplied, never in this repo) headless
+for N frames twice from pristine copies and compares the full migration
+stream byte for byte. PASS at 60 and 300 frames (5 virtual seconds,
+~8MB of state).
+
+What it took - each of these was found by an actual diverging byte, in
+order, and lives in patches/ + waterbox/:
+
+1. Frame boundary: one 16.667ms QEMU_CLOCK_VIRTUAL slice per frame under
+   `-icount shift=5,sleep=off -rtc base=2000-01-01,clock=vm`. icount sleep
+   MUST be off: sleep=on warps by measured host time.
+2. cpu_ticks_offset/cpu_clock_offset are host-clock deltas saved into the
+   state; on XBOX nothing consumes them (the TSC is virtual-clock derived
+   upstream), so pre_save canonicalises them (patch 0006).
+3. EEPROM: xemu mints it with real randomness. It is per-project persistent
+   data; the gate mints once and copies per leg.
+4. The APU frame thread paced EP frames against the host clock and the SDL
+   audio queue; headless it is a QEMU_CLOCK_VIRTUAL timer at EP_FRAME_US
+   (patch 0004). Voice workers pinned to 1.
+5. The nv2a pfifo thread consumed pushbuffers at host speed; headless a
+   kick arms a drain timer at virtual-now and the drain runs from the main
+   loop (patch 0005). Draining synchronously inside the kicker's MMIO stack
+   deadlocks: pgraph work can longjmp back to the CPU loop and leak locks,
+   and pgraph_write holds pfifo.lock + pg->lock. The thread's bql_lock
+   dances become conditional on bql_locked().
+6. Disk I/O completed at host time; block/chimera-latency.c (copied in, wired
+   by patch 0003) makes every request complete exactly 2ms of VIRTUAL time
+   after submission - the interrupt's position in the instruction stream
+   can no longer depend on the host's storage. Requests issued while the vm
+   is stopped (realize-time geometry probe, savevm) complete immediately.
+7. The warp governor (driver): with sleep=off an idle guest's clock leaps
+   to the next deadline, overtaking in-flight I/O in host-dependent ways; a
+   permanently pending 10us virtual timer bounds every leap.
+8. All periodic timers advance by ABSOLUTE deadline (re-arming off "now"
+   accumulates callback lateness = host timing), and the frame boundary
+   callback calls vm_stop(RUN_STATE_PAUSED) while it still holds the BQL -
+   the rr thread computes instruction budgets under the BQL, so not one
+   instruction runs past the boundary.
+
+Debug lore: scripts/analyze-migration.py decodes the state stream; diffing
+two runs' JSON names the diverging device instantly. `-Ddebug_mutex=true`
+records file:line of every mutex's last taker. Watch for orphaned qemus
+holding qcow2 write locks after killed runs - they make later runs hang at
+startup, which looks exactly like a new deadlock.
+
 ## Build facts discovered so far
 
 - meson 1.5.1 / ninja 1.11.1 / python 3.12 on the box; guest toolchain at

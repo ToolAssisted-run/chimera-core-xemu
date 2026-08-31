@@ -1,0 +1,196 @@
+diff --git a/hw/xbox/mcpx/apu/apu.c b/hw/xbox/mcpx/apu/apu.c
+index 1ee6dc4252..34f612ccb8 100644
+--- a/hw/xbox/mcpx/apu/apu.c
++++ b/hw/xbox/mcpx/apu/apu.c
+@@ -102,6 +102,7 @@ static const MemoryRegionOps mcpx_apu_mmio_ops = {
+     .write = mcpx_apu_write,
+ };
+ 
++#ifdef CONFIG_SDL
+ static void throttle_update_debug(MCPXAPUState *d, int64_t now_us)
+ {
+     if (d->throttle.deviation.last_us > 0) {
+@@ -117,6 +118,7 @@ static void throttle_update_debug(MCPXAPUState *d, int64_t now_us)
+     }
+     d->throttle.deviation.last_us = now_us;
+ }
++#endif /* CONFIG_SDL */
+ 
+ static void throttle_publish_debug(MCPXAPUState *d)
+ {
+@@ -147,6 +149,7 @@ static void throttle_publish_debug(MCPXAPUState *d)
+     d->throttle.queued_bytes_count = 0;
+ }
+ 
++#ifdef CONFIG_SDL
+ static void throttle_record_queue(MCPXAPUState *d, int queued_bytes)
+ {
+     if (d->throttle.queued_bytes_count == 0) {
+@@ -165,7 +168,9 @@ static void throttle_record_queue(MCPXAPUState *d, int queued_bytes)
+         d->throttle.pacing.ok++;
+     }
+ }
++#endif
+ 
++#ifdef CONFIG_SDL
+ static void throttle(MCPXAPUState *d)
+ {
+     if (d->ep_frame_div % 8) {
+@@ -216,6 +221,8 @@ static void throttle(MCPXAPUState *d)
+     }
+ }
+ 
++#endif /* CONFIG_SDL */
++
+ static void se_frame(MCPXAPUState *d)
+ {
+     mcpx_apu_update_dsp_preference(d);
+@@ -254,6 +261,7 @@ static void se_frame(MCPXAPUState *d)
+     mcpx_debug_end_frame();
+ }
+ 
++#ifdef CONFIG_SDL
+ static void *mcpx_apu_frame_thread(void *arg)
+ {
+     MCPXAPUState *d = MCPX_APU_DEVICE(arg);
+@@ -301,9 +309,51 @@ static void *mcpx_apu_frame_thread(void *arg)
+     qemu_mutex_unlock(&d->lock);
+     return NULL;
+ }
++#else /* !CONFIG_SDL */
++
++/* CHIMERA: the deterministic EP frame pump. The hardware produces one EP
++ * frame every 256 samples at 48kHz; the SDL build approximates that with a
++ * free-running thread throttled against the host clock and the audio queue,
++ * which makes the DSP's progress relative to the CPU a property of the host.
++ * Here the same per-frame body runs from a QEMU_CLOCK_VIRTUAL timer instead:
++ * under icount, both the moment a frame runs and everything it computes are
++ * pure functions of the machine.
++ */
++static void apu_vframe_tick(void *opaque)
++{
++    MCPXAPUState *d = MCPX_APU_DEVICE(opaque);
++
++    qemu_mutex_lock(&d->lock);
++    int xcntmode = GET_MASK(qatomic_read(&d->regs[NV_PAPU_SECTL]),
++                            NV_PAPU_SECTL_XCNTMODE);
++    uint32_t fectl = qatomic_read(&d->regs[NV_PAPU_FECTL]);
++    bool halted = xcntmode == NV_PAPU_SECTL_XCNTMODE_OFF ||
++                  (fectl & NV_PAPU_FECTL_FEMETHMODE_TRAPPED) ||
++                  (fectl & NV_PAPU_FECTL_FEMETHMODE_HALTED);
++
++    if (halted || d->set_irq) {
++        update_irq(d); /* BQL is held in timer context */
++        d->set_irq = false;
++    }
++    if (!halted) {
++        se_frame(d);
++    }
++    qemu_mutex_unlock(&d->lock);
++
++    /* absolute deadlines - re-arming off "now" would accumulate callback
++     * lateness, which is host timing */
++    d->vframe_next += (int64_t)EP_FRAME_US * 1000;
++    timer_mod_ns(d->vframe_timer, d->vframe_next);
++}
++#endif /* !CONFIG_SDL */
+ 
+ static void mcpx_apu_wait_for_idle(MCPXAPUState *d)
+ {
++#ifndef CONFIG_SDL
++    /* CHIMERA: no frame thread to quiesce - EP frames run from a virtual
++     * timer, which cannot be mid-frame while we hold the BQL */
++    return;
++#endif
+     d->pause_requested = true;
+     qemu_cond_signal(&d->cond);
+     while (!d->is_idle) {
+@@ -313,6 +363,9 @@ static void mcpx_apu_wait_for_idle(MCPXAPUState *d)
+ 
+ static void mcpx_apu_resume(MCPXAPUState *d)
+ {
++#ifndef CONFIG_SDL
++    return;
++#endif
+     d->pause_requested = false;
+     qemu_cond_signal(&d->cond);
+ }
+@@ -333,13 +386,17 @@ static void mcpx_apu_reset_hold(Object *obj, ResetType type)
+ {
+     MCPXAPUState *d = MCPX_APU_DEVICE(obj);
+ 
++#ifdef CONFIG_SDL
+     bql_unlock();
++#endif
+     qemu_mutex_lock(&d->lock);
+     mcpx_apu_wait_for_idle(d);
+     mcpx_apu_reset_locked(d);
+     mcpx_apu_resume(d);
+     qemu_mutex_unlock(&d->lock);
++#ifdef CONFIG_SDL
+     bql_lock();
++#endif
+ }
+ 
+ // Note: This is handled as a VM state change and not as a `pre_save` callback
+@@ -350,7 +407,9 @@ static void mcpx_apu_vm_state_change(void *opaque, bool running, RunState state)
+     MCPXAPUState *d = opaque;
+ 
+     if (!running) {
++#ifdef CONFIG_SDL
+         bql_unlock();
++#endif
+         qemu_mutex_lock(&d->lock);
+         mcpx_apu_wait_for_idle(d);
+         if (d->gp.dsp) {
+@@ -360,7 +419,9 @@ static void mcpx_apu_vm_state_change(void *opaque, bool running, RunState state)
+             dsp_sync_to_vm(d->ep.dsp);
+         }
+         qemu_mutex_unlock(&d->lock);
++#ifdef CONFIG_SDL
+         bql_lock();
++#endif
+     } else {
+         qemu_mutex_lock(&d->lock);
+         if (d->gp.dsp) {
+@@ -425,9 +486,16 @@ static void mcpx_apu_realize(PCIDevice *dev, Error **errp)
+     }
+ 
+     qemu_add_vm_change_state_handler(mcpx_apu_vm_state_change, d);
++#ifdef CONFIG_SDL
+     qemu_thread_create(&d->apu_thread, "mcpx.apu_thread", mcpx_apu_frame_thread,
+                        d, QEMU_THREAD_JOINABLE);
+     mcpx_apu_wait_for_idle(d);
++#else
++    d->vframe_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, apu_vframe_tick, d);
++    d->vframe_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
++                     (int64_t)EP_FRAME_US * 1000;
++    timer_mod_ns(d->vframe_timer, d->vframe_next);
++#endif
+     qemu_mutex_unlock(&d->lock);
+ }
+ 
+@@ -435,15 +503,23 @@ static void mcpx_apu_exitfn(PCIDevice *dev)
+ {
+     MCPXAPUState *d = MCPX_APU_DEVICE(dev);
+ 
++#ifdef CONFIG_SDL
+     bql_unlock();
++#endif
+     qemu_mutex_lock(&d->lock);
+     mcpx_apu_wait_for_idle(d);
+     qatomic_set(&d->exiting, true);
+     qemu_cond_signal(&d->cond);
+     qemu_mutex_unlock(&d->lock);
++#ifdef CONFIG_SDL
+     bql_lock();
++#endif
+ 
++#ifdef CONFIG_SDL
+     qemu_thread_join(&d->apu_thread);
++#else
++    timer_free(d->vframe_timer);
++#endif
+     mcpx_apu_vp_finalize(d);
+     mcpx_apu_monitor_finalize(d);
+ }

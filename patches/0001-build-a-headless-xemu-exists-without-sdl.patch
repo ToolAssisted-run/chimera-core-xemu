@@ -1,0 +1,213 @@
+diff --git a/block/meson.build b/block/meson.build
+index 34b1b2a306..eb12852c85 100644
+--- a/block/meson.build
++++ b/block/meson.build
+@@ -42,6 +42,7 @@ block_ss.add(files(
+ ), zstd, zlib)
+ 
+ system_ss.add(when: 'CONFIG_TCG', if_true: files('blkreplay.c'))
++system_ss.add(files('chimera-latency.c')) # CHIMERA: fixed-virtual-latency filter
+ system_ss.add(files('block-ram-registrar.c'))
+ 
+ if get_option('qcow1').allowed()
+diff --git a/hw/xbox/mcpx/apu/meson.build b/hw/xbox/mcpx/apu/meson.build
+index 9b161a900b..80d289a377 100644
+--- a/hw/xbox/mcpx/apu/meson.build
++++ b/hw/xbox/mcpx/apu/meson.build
+@@ -1,8 +1,11 @@
+-mcpx_ss.add(sdl, files(
++# CHIMERA: the APU is machine hardware and compiles in every build; only the
++# audio sink (monitor.c, SDL) is host-facing. Headless builds get the null
++# sink and produce their samples through the driver instead.
++mcpx_ss.add(files(
+ 	'apu.c',
+ 	'debug.c',
+-	'monitor.c',
+ 	))
++mcpx_ss.add(when: sdl, if_true: files('monitor.c'), if_false: files('monitor-null.c'))
+ 
+ subdir('vp')
+ subdir('dsp')
+diff --git a/hw/xbox/meson.build b/hw/xbox/meson.build
+index 8cf1ea0bb7..05812b79c5 100644
+--- a/hw/xbox/meson.build
++++ b/hw/xbox/meson.build
+@@ -14,8 +14,10 @@ specific_ss.add(files(
+ 	'xbox.c',
+ 	'xbox_pci.c',
+ 	'xid.c',
+-	'xblc.c',
+ 	'xid-gamepad.c',
+ 	))
++# CHIMERA: the Live Communicator headset streams through SDL audio; a
++# headless build has no use for the device
++specific_ss.add(when: sdl, if_true: files('xblc.c'))
+ subdir('nv2a')
+ subdir('mcpx')
+diff --git a/hw/xbox/nv2a/pgraph/gl/meson.build b/hw/xbox/nv2a/pgraph/gl/meson.build
+index c19a542adb..92c1ec691d 100644
+--- a/hw/xbox/nv2a/pgraph/gl/meson.build
++++ b/hw/xbox/nv2a/pgraph/gl/meson.build
+@@ -1,3 +1,5 @@
++# CHIMERA: the GL renderer exists only with SDL + epoxy on board
++if sdl.found() and opengl.found()
+ specific_ss.add([sdl, gloffscreen, files(
+ 	'blit.c',
+ 	'debug.c',
+@@ -11,3 +13,4 @@ specific_ss.add([sdl, gloffscreen, files(
+ 	'texture.c',
+ 	'vertex.c',
+ 	)])
++endif
+diff --git a/hw/xbox/nv2a/pgraph/null/meson.build b/hw/xbox/nv2a/pgraph/null/meson.build
+index e2731a13d9..9606f0ed7b 100644
+--- a/hw/xbox/nv2a/pgraph/null/meson.build
++++ b/hw/xbox/nv2a/pgraph/null/meson.build
+@@ -1,3 +1,5 @@
+-specific_ss.add([sdl, files(
++# CHIMERA: the null renderer has no SDL in it and is the one renderer a
++# headless build always has - it must not ride the SDL condition.
++specific_ss.add(files(
+ 	'renderer.c',
+-	)])
++	))
+diff --git a/hw/xbox/nv2a/pgraph/thirdparty/meson.build b/hw/xbox/nv2a/pgraph/thirdparty/meson.build
+index fbc3751ea7..550ee26d01 100644
+--- a/hw/xbox/nv2a/pgraph/thirdparty/meson.build
++++ b/hw/xbox/nv2a/pgraph/thirdparty/meson.build
+@@ -11,8 +11,14 @@ nv2a_vsh_cpu = declare_dependency(include_directories: nv2a_vsh_cpu_subproj.incl
+                                     nv2a_vsh_cpu_subproj.target('nv2a_vsh_disassembler'),
+                                     ])
+ 
++# CHIMERA: gloffscreen serves only the GL renderer; a headless build has
++# neither SDL nor epoxy to compile it against
++if sdl.found() and opengl.found()
+ libgloffscreen = static_library('libgloffscreen',
+                           sources: files('gloffscreen/common.c', 'gloffscreen/sdl.c'),
+-                          dependencies: sdl)
++                          dependencies: [sdl, opengl])
+ gloffscreen = declare_dependency(link_with: libgloffscreen,
+                            include_directories: ['gloffscreen'])
++else
++gloffscreen = not_found
++endif
+diff --git a/meson.build b/meson.build
+index 82e5f5af65..1e49434d22 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1882,10 +1882,11 @@ if not get_option('coreaudio').auto() or (host_os == 'darwin' and have_system)
+                          required: get_option('coreaudio'))
+ endif
+ 
+-epoxy = dependency('epoxy', required: true)
++# CHIMERA: epoxy exists to dispatch GL; without the GL renderer it is noise
++epoxy = dependency('epoxy', required: get_option('opengl').enabled())
+ 
+ opengl = not_found
+-if not get_option('opengl').auto() or have_system or have_vhost_user_gpu
++if epoxy.found() and not get_option('opengl').disabled() and (not get_option('opengl').auto() or have_system or have_vhost_user_gpu)
+   # FIXME: Use meson's 'gl' dep
+   if host_os == 'darwin'
+     opengl_libs=['-framework', 'OpenGL']
+@@ -2390,7 +2391,8 @@ libglslang = not_found
+ if host_os == 'windows'
+   vulkan = declare_dependency(compile_args: ['-DVK_USE_PLATFORM_WIN32_KHR'])
+ elif host_os == 'linux'
+-  vulkan = dependency('vulkan')
++  # CHIMERA: the vk renderer is optional; headless builds have no Vulkan
++  vulkan = dependency('vulkan', required: false)
+ endif
+ 
+ if vulkan.found()
+@@ -2432,11 +2434,14 @@ if host_os == 'windows'
+   libpcap = declare_dependency(include_directories: 'winpcap-loader/include',
+                                link_args: ['-lws2_32'])
+ else
+-  libpcap = dependency('libpcap', method: 'pkg-config', required: true)
++  # CHIMERA: pcap feeds xemu-net (UI layer); headless builds carry no UI
++  libpcap = dependency('libpcap', method: 'pkg-config', required: sdl.found())
+ endif
+ 
+ libsamplerate = dependency('samplerate', method: 'pkg-config', required: true)
+ 
++# CHIMERA: the imgui HUD exists only when the SDL UI does
++if sdl.found()
+ imgui_proj = subproject('imgui', required: true,
+                          default_options: [
+                            'default_library=static',
+@@ -2462,6 +2467,10 @@ imgui = imgui_proj.get_variable('imgui_dep')
+ implot_proj = subproject('implot', required: true,
+                          default_options: ['default_library=static'])
+ implot = implot_proj.get_variable('implot_dep')
++else
++imgui = not_found
++implot = not_found
++endif
+ 
+ genconfig_proj = subproject('genconfig', required: true)
+ genconfig = genconfig_proj.get_variable('cnode_dep')
+@@ -2704,6 +2713,7 @@ config_host_data.set('CONFIG_RDMA', rdma.found())
+ config_host_data.set('CONFIG_RELOCATABLE', get_option('relocatable'))
+ config_host_data.set('CONFIG_SAFESTACK', get_option('safe_stack'))
+ config_host_data.set('CONFIG_SDL', sdl.found())
++config_host_data.set('CONFIG_PCAP', libpcap.found()) # CHIMERA
+ config_host_data.set('CONFIG_SDL_IMAGE', sdl_image.found())
+ config_host_data.set('CONFIG_SECCOMP', seccomp.found())
+ if seccomp.found()
+diff --git a/net/meson.build b/net/meson.build
+index 804eb71f82..ecf8a8187e 100644
+--- a/net/meson.build
++++ b/net/meson.build
+@@ -62,7 +62,10 @@ else
+   system_ss.add(files('tap.c', 'tap-stub.c'))
+ endif
+ 
+-system_ss.add([libpcap, files('pcap.c')])
++# CHIMERA: the pcap bridge is part of the removed UI-facing networking
++if libpcap.found()
++  system_ss.add([libpcap, files('pcap.c')])
++endif
+ 
+ if have_vhost_net_vdpa
+   system_ss.add(when: 'CONFIG_VIRTIO_NET', if_true: files('vhost-vdpa.c'), if_false: files('vhost-vdpa-stub.c'))
+diff --git a/ui/meson.build b/ui/meson.build
+index 86acebb85c..c5307e821b 100644
+--- a/ui/meson.build
++++ b/ui/meson.build
+@@ -17,14 +17,22 @@ system_ss.add(files(
+   'util.c',
+ ))
+ 
++# CHIMERA: the settings system (g_config) is machine infrastructure - hw/xbox
++# reads it - so it stays in every build. The rest of the xemu UI (SDL window,
++# imgui HUD, net, snapshot browser) exists only when SDL does; a headless
++# build supplies main(), input state and the snapshot hooks itself
++# (ui/xemu-waterbox.c, copied in by the core repo's apply-patches.sh).
++xemu_ss = ss.source_set()
++xemu_ss.add(tomlplusplus, genconfig, files('xemu-settings.cc'))
++
++if sdl.found()
++
+ subdir('thirdparty')
+ 
+-xemu_ss = ss.source_set()
+ xemu_ss.add(files(
+   'xemu-input.c',
+   'xemu-monitor.c',
+   'xemu-net.c',
+-  'xemu-settings.cc',
+   'xemu-controllers.cc',
+ 
+   'xemu.c',
+@@ -53,6 +61,11 @@ elif host_os == 'darwin'
+   xemu_ss.add(files('xemu-os-utils-macos.m'))
+ endif
+ xemu_ss.add(imgui, implot, stb_image, sdl, opengl, fa, fpng, json, fatx, tomlplusplus, genconfig)
++
++else
++xemu_ss.add(files('xemu-waterbox.c'))
++endif
++
+ system_ss.add_all(xemu_ss)
+ 
+ system_ss.add(when: pixman, if_true: files('console-vc.c'), if_false: files('console-vc-stubs.c'))

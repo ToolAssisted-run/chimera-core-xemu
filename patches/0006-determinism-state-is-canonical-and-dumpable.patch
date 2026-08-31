@@ -1,0 +1,63 @@
+diff --git a/migration/savevm.c b/migration/savevm.c
+index 8524c4c460..0064c9caef 100644
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -1796,7 +1796,7 @@ void qemu_savevm_state_cleanup(void)
+     }
+ }
+ 
+-static int qemu_savevm_state(QEMUFile *f, Error **errp)
++int qemu_savevm_state(QEMUFile *f, Error **errp)
+ {
+     int ret;
+     MigrationState *ms = migrate_get_current();
+diff --git a/migration/savevm.h b/migration/savevm.h
+index 125a2507b7..6f112fe555 100644
+--- a/migration/savevm.h
++++ b/migration/savevm.h
+@@ -42,6 +42,9 @@ int qemu_savevm_state_iterate(QEMUFile *f, bool postcopy);
+ void qemu_savevm_state_cleanup(void);
+ void qemu_savevm_state_complete_postcopy(QEMUFile *f);
+ int qemu_savevm_state_complete_precopy(QEMUFile *f, bool iterable_only);
++/* CHIMERA: the whole-machine state stream, to any QEMUFile - the gate
++ * artifact a headless driver writes after its frames have run */
++int qemu_savevm_state(QEMUFile *f, Error **errp);
+ void qemu_savevm_state_pending_exact(uint64_t *must_precopy,
+                                      uint64_t *can_postcopy);
+ void qemu_savevm_state_pending_estimate(uint64_t *must_precopy,
+diff --git a/system/cpu-timers.c b/system/cpu-timers.c
+index 9919b46230..70dd4d2ac4 100644
+--- a/system/cpu-timers.c
++++ b/system/cpu-timers.c
+@@ -217,10 +217,31 @@ static const VMStateDescription icount_vmstate_timers = {
+     }
+ };
+ 
++#if defined(XBOX)
++static int timers_pre_save(void *opaque)
++{
++    /* CHIMERA: these two offsets are deltas against the HOST clock, the one
++     * thing two identical runs never share. On the Xbox machine nothing
++     * consumes them - cpu_get_tsc derives the TSC from the virtual clock -
++     * so under icount they are pure noise in an otherwise deterministic
++     * state stream. Canonicalise them so the stream is comparable.
++     */
++    TimersState *t = opaque;
++    if (icount_enabled()) {
++        t->cpu_ticks_offset = 0;
++        t->cpu_clock_offset = 0;
++    }
++    return 0;
++}
++#endif
++
+ static const VMStateDescription vmstate_timers = {
+     .name = "timer",
+     .version_id = 2,
+     .minimum_version_id = 1,
++#if defined(XBOX)
++    .pre_save = timers_pre_save,
++#endif
+     .fields = (const VMStateField[]) {
+         VMSTATE_INT64(cpu_ticks_offset, TimersState),
+         VMSTATE_UNUSED(8),
