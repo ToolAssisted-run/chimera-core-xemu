@@ -58,7 +58,7 @@ guest_sysroot = '$sr'
 pkg_config_libdir = ['$deps/lib/pkgconfig', '$deps/share/pkgconfig', '$deps/lib/x86_64-linux-gnu/pkgconfig']
 
 [built-in options]
-c_args = ['-specs', '$sr/lib/musl-gcc.specs', '-fvisibility=hidden', '-mcmodel=large', '-mstack-protector-guard=global', '-fno-stack-protector', '-fno-pic', '-fno-pie', '-fcf-protection=none', '-DCHIMERA_GUEST', '-I$mb/extern/emulibc', '-I$mb/source/guest/include']
+c_args = ['-specs', '$sr/lib/musl-gcc.specs', '-fvisibility=hidden', '-mcmodel=large', '-mstack-protector-guard=global', '-fno-stack-protector', '-fno-pic', '-fno-pie', '-fcf-protection=none', '-DCHIMERA_GUEST', '-DPIXMAN_NO_TLS', '-I$mb/extern/emulibc', '-I$mb/source/guest/include']
 cpp_args = ['-specs', '$sr/lib/musl-gcc.specs', '-fvisibility=hidden', '-mcmodel=large', '-mstack-protector-guard=global', '-fno-stack-protector', '-fno-pic', '-fno-pie', '-fcf-protection=none', '-fexceptions', '-DCHIMERA_GUEST', '-I$mb/extern/emulibc', '-I$mb/source/guest/include', '-I$sr/include/c++/$gccver', '-I$sr/include/c++/$gccver/x86_64-linux-musl']
 c_link_args = ['-specs', '$sr/lib/musl-gcc.specs']
 cpp_link_args = ['-specs', '$sr/lib/musl-gcc.specs']
@@ -76,13 +76,15 @@ bin="$root/build/guest-bin"
 mkdir -p "$bin"
 mbo="$mbuild/source/guest"
 
+gcc -specs "$sr/lib/musl-gcc.specs" -mcmodel=large -mstack-protector-guard=global -fno-stack-protector -fno-pic -fno-pie -fcf-protection=none -O2 -c "$here/guest-ucontext.c" -o "$root/build/guest-ucontext.o"
+
 {
 	echo '#!/bin/sh'
 	echo 'case " $* " in'
 	echo '*" -c "*|*" -E "*|*" -S "*|*"--version"*|*"-dumpmachine"*)'
 	echo "	exec gcc -specs \"$sr/lib/musl-gcc.specs\" \"\$@\" ;;"
 	echo 'esac'
-	echo "exec gcc -specs \"$sr/lib/musl-gcc.specs\" \"\$@\" -Wl,--no-relax -Wl,-z,stack-size=8388608 -Wl,-u,pthread_once -Wl,-u,pthread_cond_wait -Wl,-u,pthread_cond_broadcast -Wl,-u,pthread_key_create \"$mbo/cxxglue.c.o\" \"$mbo/emulibc.c.o\" -L\"$sr/lib\" -lstdc++ -lgcc -lgcc_eh -lc"
+	echo "exec gcc -specs \"$sr/lib/musl-gcc.specs\" \"\$@\" -T \"$mb/source/guest/linkscript.T\" -Wl,--no-relax -Wl,-z,stack-size=8388608 -Wl,-u,pthread_once -Wl,-u,pthread_cond_wait -Wl,-u,pthread_cond_broadcast -Wl,-u,pthread_key_create \"$mbo/cxxglue.c.o\" \"$mbo/emulibc.c.o\" \"$root/build/guest-ucontext.o\" -L\"$sr/lib\" -lstdc++ -lgcc -lgcc_eh -lc"
 } > "$root/build/guest-cc"
 sed "s|exec gcc -specs \"$sr/lib/musl-gcc.specs\" \"\$@\"|exec g++ -specs \"$sr/lib/musl-gcc.specs\" -I\"$sr/include/c++/$gccver\" -I\"$sr/include/c++/$gccver/x86_64-linux-musl\" \"\$@\"|g" "$root/build/guest-cc" > "$root/build/guest-cxx"
 chmod +x "$root/build/guest-cc" "$root/build/guest-cxx"
@@ -106,10 +108,10 @@ cd "$root/build/qemu-guest"
 "$root/extern/xemu/configure" \
 	--cross-prefix="$bin/x86_64-chimera-linux-musl-" \
 	--target-list=i386-softmmu \
-	--extra-cflags="-mcmodel=large -mstack-protector-guard=global -fno-stack-protector -fno-pic -fno-pie -fcf-protection=none -DXBOX=1 -I$deps/include -Wno-error" \
+	--extra-cflags="-mcmodel=large -mstack-protector-guard=global -fno-stack-protector -fno-pic -fno-pie -fcf-protection=none -DXBOX=1 -DCHIMERA_GUEST "-D__thread=" -I$deps/include -I$mb/extern/emulibc -I$mb/source/guest/include -I$mb/extern/jsmn -Wno-error" \
 	--extra-ldflags="-static -no-pie" \
 	--enable-pixman --static --disable-werror \
 	--disable-sdl --disable-opengl --disable-gtk --disable-vnc \
 	--disable-slirp --disable-docs --disable-tools --disable-guest-agent \
-	--audio-drv-list= --disable-kvm --disable-xen
+	--audio-drv-list= --disable-kvm --disable-xen --with-coroutine=ucontext
 echo "guest build configured: ninja -C build/qemu-guest qemu-system-i386"

@@ -208,7 +208,7 @@ index 804eb71f82..ecf8a8187e 100644
  if have_vhost_net_vdpa
    system_ss.add(when: 'CONFIG_VIRTIO_NET', if_true: files('vhost-vdpa.c'), if_false: files('vhost-vdpa-stub.c'))
 diff --git a/ui/meson.build b/ui/meson.build
-index 86acebb85c..c5307e821b 100644
+index 86acebb85c..3a9e35ce96 100644
 --- a/ui/meson.build
 +++ b/ui/meson.build
 @@ -17,14 +17,22 @@ system_ss.add(files(
@@ -236,13 +236,17 @@ index 86acebb85c..c5307e821b 100644
    'xemu-controllers.cc',
  
    'xemu.c',
-@@ -53,6 +61,11 @@ elif host_os == 'darwin'
+@@ -53,6 +61,15 @@ elif host_os == 'darwin'
    xemu_ss.add(files('xemu-os-utils-macos.m'))
  endif
  xemu_ss.add(imgui, implot, stb_image, sdl, opengl, fa, fpng, json, fatx, tomlplusplus, genconfig)
 +
 +else
 +xemu_ss.add(files('xemu-waterbox.c'))
++if meson.is_cross_build()
++  # the waterbox build also carries the libc-level syscall shims
++  xemu_ss.add(files('guest-syscalls.c'))
++endif
 +endif
 +
  system_ss.add_all(xemu_ss)

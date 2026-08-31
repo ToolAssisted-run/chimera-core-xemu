@@ -61,7 +61,38 @@ numbered patches applied to the submodule (the pcsx2 convention).
 - M5: savestates (arena snapshot; audit for host handles), movies, packaging,
   licences (QEMU is GPL-2.0; the bundle addendum follows the dosbox-x model).
 
-## M1 status: the native determinism leg is GREEN (2026-08-31)
+## M1 status: COMPLETE - native == sandbox byte for byte (2026-08-31)
+
+`waterbox/run-gate.sh N` runs the full ritual: two native runs must agree,
+and the waterboxed core.wbx must produce the byte-identical machine-state
+stream. PASS at 60 and 300 frames of real-firmware boot.
+
+The sandbox leg took, beyond the native work below:
+- The TLS wall (the PPSSPP lesson at QEMU scale): __thread is fs-relative
+  and fs still points at HOST TLS in the box. 26 TLS symbols. Fixes:
+  coroutine-tls.h rewritten over pthread keys under CHIMERA_GUEST (11 syms,
+  incl. rcu_reader and the coroutine core), current_cpu behind a pthread-key
+  accessor macro, `-D__thread=` sweeps the rest into plain globals (safe
+  one-at-a-time under green threads), pixman rebuilt with -DPIXMAN_NO_TLS.
+  `readelf -sW core.wbx | awk '$4=="TLS"'` MUST stay empty.
+- QEMU's coroutines: the sigaltstack backend needs real signal delivery;
+  forced --with-coroutine=ucontext and gave the guest a 70-line
+  makecontext/swapcontext (waterbox/guest-ucontext.c) - QEMU only ever
+  enters each coroutine once through it, all later switching is setjmp.
+- waterbox/guest-syscalls.c: fake eventfd/pipe/signalfd fds in guest memory,
+  ppoll/poll that yield to the green threads, preadv/pwrite emulation,
+  open() minus the O_CLOEXEC-induced internal fcntl, no-op sigaction/prctl,
+  ENOSYS epoll/memfd (QEMU falls back), fixed sysinfo + __lsysinfo,
+  deterministic getrandom.
+- The block filter grew cow=on: writes into an in-memory chunk overlay, the
+  child opened read-only (a mounted file), write perms masked in
+  .bdrv_child_perm. Identical arrangement native and sandbox, so the disk
+  timing matches exactly.
+- Exports: Init/FrameAdvance/GetStateSize/GetStateData (+GetLoadError);
+  main() returns 0, work happens in exports; the state stash is copied out
+  before qemu_fclose (the buffer channel frees its bytes on close).
+
+## The native determinism story (still true, prerequisite)
 
 `waterbox/run-determinism-native.sh N` boots the real firmware (MCPX 1.0 +
 Complex 4627 + xbox_hdd.qcow2, user-supplied, never in this repo) headless

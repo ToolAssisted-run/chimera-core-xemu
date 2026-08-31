@@ -1,8 +1,8 @@
 diff --git a/system/vl.c b/system/vl.c
-index f45bdc3458..25eb01075a 100644
+index f45bdc3458..6ba0e800b1 100644
 --- a/system/vl.c
 +++ b/system/vl.c
-@@ -3066,9 +3066,20 @@ void qemu_init(int argc, char **argv)
+@@ -3066,9 +3066,35 @@ void qemu_init(int argc, char **argv)
          } else {
              fake_argv[fake_argc++] = strdup("-drive");
              char *escaped_hdd_path = strdup_double_commas(hdd_path);
@@ -13,17 +13,32 @@ index f45bdc3458..25eb01075a 100644
 +#else
 +            /* CHIMERA: the disk answers in fixed VIRTUAL time - the one way
 +             * an interrupt's position in the instruction stream cannot
-+             * depend on how fast the host's storage happened to be */
-+            bool hdd_is_qcow2 = g_str_has_suffix(hdd_path, ".qcow2");
++             * depend on how fast the host's storage happened to be - and
++             * cow=on keeps every write in memory, so the image on disk is
++             * never touched and the sandbox needs no writable host file */
++            bool hdd_is_qcow2 = false;
++            {
++                /* by magic, not by name - a mounted file has no suffix */
++                FILE *hf = fopen(hdd_path, "rb");
++                if (hf) {
++                    unsigned char m[4] = { 0 };
++                    if (fread(m, 1, 4, hf) == 4) {
++                        hdd_is_qcow2 = m[0] == 'Q' && m[1] == 'F' &&
++                                       m[2] == 'I' && m[3] == 0xfb;
++                    }
++                    fclose(hf);
++                }
++            }
 +            fake_argv[fake_argc++] = g_strdup_printf(
-+                "index=0,media=disk,locked=on,driver=chimera-latency,"
-+                "image.driver=%s,image.file.driver=file,image.file.filename=%s",
++                "index=0,media=disk,locked=on,driver=%s,"
++                "file.driver=chimera-latency,file.cow=on,"
++                "file.image.driver=file,file.image.filename=%s",
 +                hdd_is_qcow2 ? "qcow2" : "raw", escaped_hdd_path);
 +#endif
              free(escaped_hdd_path);
          }
      }
-@@ -3095,7 +3106,13 @@ void qemu_init(int argc, char **argv)
+@@ -3095,7 +3121,13 @@ void qemu_init(int argc, char **argv)
      free(escaped_dvd_path);
  
      fake_argv[fake_argc++] = strdup("-display");

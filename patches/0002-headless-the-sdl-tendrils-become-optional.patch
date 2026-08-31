@@ -56,6 +56,35 @@ index 2609958dc0..4db3fcda31 100644
  #ifdef CONFIG_VMNET
          [NET_CLIENT_DRIVER_VMNET_HOST] = net_init_vmnet_host,
          [NET_CLIENT_DRIVER_VMNET_SHARED] = net_init_vmnet_shared,
+diff --git a/ui/qemu-pixman.c b/ui/qemu-pixman.c
+index aea09755b9..65339cd1cd 100644
+--- a/ui/qemu-pixman.c
++++ b/ui/qemu-pixman.c
+@@ -278,6 +278,13 @@ qemu_pixman_shareable_alloc(const char *name, size_t size,
+ {
+ #ifdef WIN32
+     return qemu_win32_map_alloc(size, handle, errp);
++#elif defined(CHIMERA_GUEST)
++    /* CHIMERA: nothing in the sandbox shares a surface with anyone; plain
++     * memory serves, and the handle stays a sentinel */
++    (void)name;
++    (void)errp;
++    *handle = -1;
++    return g_malloc0(size);
+ #else
+     return qemu_memfd_alloc(name, size, 0, handle, errp);
+ #endif
+@@ -294,6 +301,10 @@ qemu_pixman_shareable_free(qemu_pixman_shareable handle,
+     if (err) {
+         error_report_err(err);
+     }
++#elif defined(CHIMERA_GUEST)
++    (void)handle;
++    (void)size;
++    g_free(ptr);
+ #else
+     qemu_memfd_free(ptr, size, handle);
+ #endif
 diff --git a/ui/xemu-input.h b/ui/xemu-input.h
 index 0eb2af9d42..02b80bc622 100644
 --- a/ui/xemu-input.h

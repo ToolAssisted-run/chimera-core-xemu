@@ -26,6 +26,8 @@ for p in "$root"/patches/*.patch; do
 done
 
 cp "$here/xemu-waterbox.c" "$xemu/ui/xemu-waterbox.c"
+cp "$here/guest-syscalls.c" "$xemu/ui/guest-syscalls.c"
 cp "$here/monitor-null.c" "$xemu/hw/xbox/mcpx/apu/monitor-null.c"
 cp "$here/chimera-latency.c" "$xemu/block/chimera-latency.c"
+cp "$here/dsp-jit-null.c" "$xemu/hw/xbox/mcpx/apu/dsp/dsp-jit-null.c"
 echo "driver sources copied"

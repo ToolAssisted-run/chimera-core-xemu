@@ -186,32 +186,159 @@ static void frame_boundary(void *opaque)
     vm_stop(RUN_STATE_PAUSED);
 }
 
-static void run_frames(long frames)
+static QEMUTimer *frame_timer;
+static int64_t frame_next;
+
+static void frame_machinery_init(void)
 {
     governor = timer_new_ns(QEMU_CLOCK_VIRTUAL, governor_tick, NULL);
     governor_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     governor_tick(NULL);
 
-    QEMUTimer *t = timer_new_ns(QEMU_CLOCK_VIRTUAL, frame_boundary, NULL);
-    int64_t next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    frame_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, frame_boundary, NULL);
+    frame_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
+static void run_one_frame(void)
+{
+    frame_done = false;
+    frame_next += VBLANK_NS;
+    timer_mod_ns(frame_timer, frame_next);
+    if (!runstate_is_running()) {
+        vm_start();
+    }
+    while (!frame_done) {
+        main_loop_wait(false);
+    }
+}
+
+static void run_frames(long frames)
+{
+    frame_machinery_init();
     bool trace = getenv("CHIMERA_TRACE_FRAMES") != NULL;
     for (long i = 0; i < frames; i++) {
-        frame_done = false;
-        next += VBLANK_NS;
-        timer_mod_ns(t, next);
-        if (!runstate_is_running()) {
-            vm_start();
-        }
-        while (!frame_done) {
-            main_loop_wait(false);
-        }
+        run_one_frame();
         if (trace) {
             fprintf(stderr, "frame %ld: late %" PRId64 " ns\n", i,
-                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - next);
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - frame_next);
         }
     }
-    timer_free(t);
 }
+
+/* after qemu_init: it returns holding the BQL and the replay lock; the main
+ * loop wants to take them itself (system/main.c does this same dance) */
+static void release_and_retake_locks(void)
+{
+    bql_unlock();
+    replay_mutex_unlock();
+    replay_mutex_lock();
+    bql_lock();
+}
+
+#ifdef CHIMERA_GUEST
+/* ==== the miniBox core ====================================================
+ *
+ * The host mounts the firmware as files named "mcpx", "bios", "eeprom" and
+ * "hdd", then calls Init() once and FrameAdvance() per frame. There is no
+ * config file: g_config is populated here, from wbx settings where one
+ * exists. GetStateSize/GetStateData expose the migration stream for the
+ * native==sandbox gate.
+ */
+#include "emulibc.h"
+#include "waterbox_settings.h"
+#include "qobject/qdict.h"
+#include "io/channel-buffer.h"
+
+static char g_loadError[256];
+
+int main(void)
+{
+    return 0; /* work happens in the exports */
+}
+
+ECL_EXPORT const char *GetLoadError(void)
+{
+    return g_loadError;
+}
+
+ECL_EXPORT int Init(void)
+{
+    setlocale(LC_NUMERIC, "C");
+
+    xemu_settings_set_path("/xemu.toml"); /* absent: defaults */
+    if (!xemu_settings_load()) {
+        snprintf(g_loadError, sizeof g_loadError, "settings: %s",
+                 xemu_settings_get_error_message());
+        return 0;
+    }
+
+    g_config.general.show_welcome = false;
+    g_config.display.renderer = CONFIG_DISPLAY_RENDERER_NULL;
+    g_config.audio.use_dsp_jit = false;
+    g_config.sys.mem_limit = (int)wbx_setting_double("memLimit128", 0)
+        ? CONFIG_SYS_MEM_LIMIT_128 : CONFIG_SYS_MEM_LIMIT_64;
+    xemu_settings_set_string(&g_config.sys.files.bootrom_path, "mcpx");
+    xemu_settings_set_string(&g_config.sys.files.flashrom_path, "bios");
+    xemu_settings_set_string(&g_config.sys.files.eeprom_path, "eeprom");
+    xemu_settings_set_string(&g_config.sys.files.hdd_path, "hdd");
+    FILE *dvdf = fopen("dvd", "rb");
+    if (dvdf != NULL) {
+        fclose(dvdf);
+        xemu_settings_set_string(&g_config.sys.files.dvd_path, "dvd");
+    }
+
+    char *argv[] = {
+        (char *)"core",
+        (char *)"-icount", (char *)"shift=5,sleep=off",
+        (char *)"-rtc", (char *)"base=2000-01-01,clock=vm",
+        NULL
+    };
+    qemu_init(5, argv);
+    release_and_retake_locks();
+    frame_machinery_init();
+    return 1;
+}
+
+ECL_EXPORT void FrameAdvance(uint64_t unused)
+{
+    (void)unused;
+    run_one_frame();
+}
+
+/* the gate artifact: the whole-machine migration stream. The buffer channel
+ * frees its bytes on close, so they are stashed before the file goes. */
+static uint8_t *g_stateData;
+static int64_t g_stateSize;
+
+ECL_EXPORT int64_t GetStateSize(void)
+{
+    Error *err = NULL;
+    g_free(g_stateData);
+    g_stateData = NULL;
+    g_stateSize = -1;
+
+    vm_stop(RUN_STATE_SAVE_VM);
+    QIOChannelBuffer *buf = qio_channel_buffer_new(8 << 20);
+    QEMUFile *f = qemu_file_new_output(QIO_CHANNEL(buf));
+    int ret = qemu_savevm_state(f, &err);
+    qemu_fflush(f);
+    if (ret == 0) {
+        g_stateSize = (int64_t)buf->usage;
+        g_stateData = g_memdup2(buf->data, buf->usage);
+    } else if (err) {
+        error_report_err(err);
+    }
+    qemu_fclose(f);
+    object_unref(OBJECT(buf));
+    return g_stateSize;
+}
+
+ECL_EXPORT uint8_t *GetStateData(void)
+{
+    return g_stateData;
+}
+
+#else /* !CHIMERA_GUEST: the native reference binary */
 
 int main(int argc, char **argv)
 {
@@ -234,13 +361,7 @@ int main(int argc, char **argv)
     }
 
     qemu_init(argc, argv);
-
-    /* qemu_init returns holding the BQL and the replay lock; the main loop
-     * wants to take them itself (system/main.c does this same dance) */
-    bql_unlock();
-    replay_mutex_unlock();
-    replay_mutex_lock();
-    bql_lock();
+    release_and_retake_locks();
 
     const char *frames_env = getenv("CHIMERA_FRAMES");
     if (frames_env) {
@@ -280,3 +401,5 @@ int main(int argc, char **argv)
     replay_mutex_unlock();
     return status;
 }
+
+#endif /* !CHIMERA_GUEST */

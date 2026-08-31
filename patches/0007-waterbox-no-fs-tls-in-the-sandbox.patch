@@ -1,0 +1,141 @@
+diff --git a/cpu-common.c b/cpu-common.c
+index 988d057d84..a94d11a314 100644
+--- a/cpu-common.c
++++ b/cpu-common.c
+@@ -121,7 +121,27 @@ CPUState *qemu_get_cpu(int index)
+ }
+ 
+ /* current CPU in the current thread. It is only valid inside cpu_exec() */
++#ifdef CHIMERA_GUEST
++#include <pthread.h>
++static pthread_key_t chimera_cpu_key;
++static pthread_once_t chimera_cpu_once = PTHREAD_ONCE_INIT;
++static void chimera_cpu_mkkey(void)
++{
++    pthread_key_create(&chimera_cpu_key, free);
++}
++CPUState **chimera_current_cpu_ptr(void)
++{
++    pthread_once(&chimera_cpu_once, chimera_cpu_mkkey);
++    CPUState **p = pthread_getspecific(chimera_cpu_key);
++    if (!p) {
++        p = calloc(1, sizeof(*p));
++        pthread_setspecific(chimera_cpu_key, p);
++    }
++    return p;
++}
++#else
+ __thread CPUState *current_cpu;
++#endif
+ 
+ struct qemu_work_item {
+     QSIMPLEQ_ENTRY(qemu_work_item) node;
+diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
+index 72dfd1f2a3..84d6c83cf2 100644
+--- a/include/hw/core/cpu.h
++++ b/include/hw/core/cpu.h
+@@ -642,7 +642,13 @@ extern CPUTailQ cpus_queue;
+ #define CPU_FOREACH_SAFE(cpu, next_cpu) \
+     QTAILQ_FOREACH_SAFE_RCU(cpu, &cpus_queue, node, next_cpu)
+ 
++#ifdef CHIMERA_GUEST
++/* CHIMERA: no fs TLS in the waterbox; the current cpu rides a pthread key */
++CPUState **chimera_current_cpu_ptr(void);
++#define current_cpu (*chimera_current_cpu_ptr())
++#else
+ extern __thread CPUState *current_cpu;
++#endif
+ 
+ /**
+  * cpu_paging_enabled:
+diff --git a/include/qemu/coroutine-tls.h b/include/qemu/coroutine-tls.h
+index 1558a826aa..a71737b99f 100644
+--- a/include/qemu/coroutine-tls.h
++++ b/include/qemu/coroutine-tls.h
+@@ -115,12 +115,45 @@
+  *
+  *   __thread int my_count;
+  */
++#ifdef CHIMERA_GUEST
++/* CHIMERA: the waterbox has no fs-based TLS - a __thread access lands in the
++ * HOST's thread block and corrupts it. The guest's pthreads (green threads)
++ * carry keyed storage through the gs-based thread pointer, so these
++ * accessors become pthread_key lookups: per-green-thread, sandbox-safe, and
++ * still coroutine-correct.
++ */
++#include <pthread.h>
++#include <stdlib.h>
++
++#define QEMU__CO_TLS_BODY(type, var, linkage)                                \
++    static pthread_key_t co_tls_key_##var;                                   \
++    static pthread_once_t co_tls_once_##var = PTHREAD_ONCE_INIT;             \
++    static void co_tls_mkkey_##var(void)                                     \
++    { pthread_key_create(&co_tls_key_##var, free); }                         \
++    linkage __attribute__((noinline, unused)) type *get_ptr_##var(void)      \
++    {                                                                        \
++        pthread_once(&co_tls_once_##var, co_tls_mkkey_##var);                \
++        type *p = pthread_getspecific(co_tls_key_##var);                     \
++        if (!p) {                                                            \
++            p = calloc(1, sizeof(type));                                     \
++            pthread_setspecific(co_tls_key_##var, p);                        \
++        }                                                                    \
++        return p;                                                            \
++    }                                                                        \
++    linkage __attribute__((noinline, unused)) type get_##var(void)           \
++    { return *get_ptr_##var(); }                                             \
++    linkage __attribute__((noinline, unused)) void set_##var(type v)         \
++    { *get_ptr_##var() = v; }
++
++#define QEMU_DEFINE_CO_TLS(type, var) QEMU__CO_TLS_BODY(type, var, )
++#else
+ #define QEMU_DEFINE_CO_TLS(type, var)                                        \
+     static __thread type co_tls_##var;                                       \
+     type get_##var(void) { asm volatile(""); return co_tls_##var; }          \
+     void set_##var(type v) { asm volatile(""); co_tls_##var = v; }           \
+     type *get_ptr_##var(void)                                                \
+     { type *ptr = &co_tls_##var; asm volatile("" : "+rm" (ptr)); return ptr; }
++#endif
+ 
+ /**
+  * QEMU_DEFINE_STATIC_CO_TLS:
+@@ -150,6 +183,9 @@
+  *   my_count = c + 1;
+  *   *(&my_count) = 0;
+  */
++#ifdef CHIMERA_GUEST
++#define QEMU_DEFINE_STATIC_CO_TLS(type, var) QEMU__CO_TLS_BODY(type, var, static)
++#else
+ #define QEMU_DEFINE_STATIC_CO_TLS(type, var)                                 \
+     static __thread type co_tls_##var;                                       \
+     static __attribute__((noinline, unused))                                 \
+@@ -161,5 +197,6 @@
+     static __attribute__((noinline, unused))                                 \
+     type *get_ptr_##var(void)                                                \
+     { type *ptr = &co_tls_##var; asm volatile("" : "+rm" (ptr)); return ptr; }
++#endif /* !CHIMERA_GUEST */
+ 
+-#endif /* QEMU_COROUTINE_TLS_H */
++#endif /* QEMU_COROUTINE_TLS_H */
+\ No newline at end of file
+diff --git a/include/system/dump.h b/include/system/dump.h
+index 607bd7b220..3a36d86fc6 100644
+--- a/include/system/dump.h
++++ b/include/system/dump.h
+@@ -76,7 +76,7 @@ typedef struct QEMU_PACKED DiskDumpHeader32 {
+     uint32_t total_ram_blocks;      /* Number of blocks should be written */
+     uint32_t device_blocks;         /* Number of total blocks in dump device */
+     uint32_t written_blocks;        /* Number of written blocks */
+-    uint32_t current_cpu;           /* CPU# which handles dump */
++    uint32_t current_cpu_no;        /* CPU# which handles dump (CHIMERA: renamed - current_cpu is a macro in the waterbox) */
+     uint32_t nr_cpus;               /* Number of CPUs */
+ } DiskDumpHeader32;
+ 
+@@ -94,7 +94,7 @@ typedef struct QEMU_PACKED DiskDumpHeader64 {
+     uint32_t total_ram_blocks;      /* Number of blocks should be written */
+     uint32_t device_blocks;         /* Number of total blocks in dump device */
+     uint32_t written_blocks;        /* Number of written blocks */
+-    uint32_t current_cpu;           /* CPU# which handles dump */
++    uint32_t current_cpu_no;        /* CPU# which handles dump (CHIMERA: renamed - current_cpu is a macro in the waterbox) */
+     uint32_t nr_cpus;               /* Number of CPUs */
+ } DiskDumpHeader64;
+ 
