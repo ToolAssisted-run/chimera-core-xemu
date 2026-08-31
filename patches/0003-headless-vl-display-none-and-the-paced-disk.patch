@@ -1,8 +1,22 @@
 diff --git a/system/vl.c b/system/vl.c
-index f45bdc3458..6ba0e800b1 100644
+index f45bdc3458..d47c13b10f 100644
 --- a/system/vl.c
 +++ b/system/vl.c
-@@ -3066,9 +3066,35 @@ void qemu_init(int argc, char **argv)
+@@ -662,7 +662,12 @@ static int drive_init_func(void *opaque, QemuOpts *opts, Error **errp)
+ {
+     BlockInterfaceType *block_default_type = opaque;
+     const char *file_path = qemu_opt_get(opts, "file");
+-    bool is_cdrom_with_file = !strcmp(qemu_opt_get(opts, "media"), "cdrom") && strlen(file_path) > 0;
++    const char *media = qemu_opt_get(opts, "media");
++    /* CHIMERA: a drive defined with nested options (file.driver=...) has no
++     * "file" opt at all - and may have no "media" either */
++    bool is_cdrom_with_file = media && !strcmp(media, "cdrom") &&
++        ((file_path && strlen(file_path) > 0) ||
++         qemu_opt_get(opts, "driver") != NULL);
+ 
+     Error *error_warn = NULL;
+     bool failed = drive_new(opts, *block_default_type, is_cdrom_with_file ? &error_warn : errp) == NULL;
+@@ -3066,9 +3071,35 @@ void qemu_init(int argc, char **argv)
          } else {
              fake_argv[fake_argc++] = strdup("-drive");
              char *escaped_hdd_path = strdup_double_commas(hdd_path);
@@ -38,7 +52,27 @@ index f45bdc3458..6ba0e800b1 100644
              free(escaped_hdd_path);
          }
      }
-@@ -3095,7 +3121,13 @@ void qemu_init(int argc, char **argv)
+@@ -3090,12 +3121,33 @@ void qemu_init(int argc, char **argv)
+     // connected but no media present.
+     fake_argv[fake_argc++] = strdup("-drive");
+     char *escaped_dvd_path = strdup_double_commas(dvd_path);
++#ifdef CONFIG_SDL
+     fake_argv[fake_argc++] = g_strdup_printf("index=1,media=cdrom,file=%s",
+         escaped_dvd_path);
++#else
++    /* CHIMERA: the DVD answers in fixed virtual time too - game disc reads
++     * must not carry host storage timing (cow because the child mount is
++     * read-only; a cdrom never writes anyway) */
++    if (strlen(escaped_dvd_path) > 0) {
++        fake_argv[fake_argc++] = g_strdup_printf(
++            "index=1,media=cdrom,driver=raw,"
++            "file.driver=chimera-latency,file.cow=on,"
++            "file.image.driver=file,file.image.filename=%s",
++            escaped_dvd_path);
++    } else {
++        fake_argv[fake_argc++] = strdup("index=1,media=cdrom,file=");
++    }
++#endif
      free(escaped_dvd_path);
  
      fake_argv[fake_argc++] = strdup("-display");
