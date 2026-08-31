@@ -113,10 +113,10 @@ index bbc8b220dc..487864b8ca 100644
      } pfifo;
  
 diff --git a/hw/xbox/nv2a/pfifo.c b/hw/xbox/nv2a/pfifo.c
-index ff4625c258..3255f7a8ad 100644
+index ff4625c258..f743add1a7 100644
 --- a/hw/xbox/nv2a/pfifo.c
 +++ b/hw/xbox/nv2a/pfifo.c
-@@ -89,11 +89,87 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
+@@ -89,11 +89,90 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
      qemu_mutex_unlock(&d->pfifo.lock);
  }
  
@@ -139,13 +139,16 @@ index ff4625c258..3255f7a8ad 100644
 +void pfifo_kick(NV2AState *d)
 +{
 +    d->pfifo.fifo_kick = true;
-+    /* Drain at this exact virtual instant, but from the main loop: the
-+     * vCPU's MMIO stack is no place to run pgraph work (paths in there can
-+     * longjmp back to the CPU loop and leak every lock on the way). Under
-+     * icount a timer at "now" is still deterministic - the vCPU stops at
-+     * the deadline and the drain interleaves at a reproducible point.
++    /* Drain at the next timer processing, from the main loop: the vCPU's
++     * MMIO stack is no place to run pgraph work (paths in there can longjmp
++     * back to the CPU loop and leak every lock on the way). The deadline is
++     * 0 - always in the past - rather than "now" because a kick can arrive
++     * from the middle of a translation block (the GL renderer's RAM-access
++     * hooks fire on plain stores), where reading the virtual clock is
++     * illegal under icount ("Bad icount read"). An already-expired timer
++     * fires at the next deterministic processing point either way.
 +     */
-+    timer_mod_ns(d->pfifo.drain_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
++    timer_mod_ns(d->pfifo.drain_timer, 0);
 +}
 +
 +void pfifo_drain_cb(void *opaque)

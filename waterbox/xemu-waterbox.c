@@ -55,6 +55,9 @@ int (*qemu_main)(void);
  * deterministic default. */
 bool chimera_gl_available(void);
 const char *chimera_gl_describe(void);
+/* the true presented frame under the GL renderer (pgraph/gl/display.c) */
+int nv2a_chimera_read_display(uint8_t *out, int cap_w, int cap_h,
+                              int *out_w, int *out_h);
 #ifdef CHIMERA_GUEST
 bool chimera_gl_try_bridge(uint64_t addr);
 #endif
@@ -393,6 +396,23 @@ static void run_frames(long frames)
     if (audio_out) {
         fclose(audio_out);
     }
+
+    /* CHIMERA_VIDEO_OUT: the last frame's presented picture, raw BGRA with
+     * a 12-byte header (w, h, 0) - the native half of a picture compare */
+    const char *video_path = getenv("CHIMERA_VIDEO_OUT");
+    if (video_path && g_config.display.renderer == CONFIG_DISPLAY_RENDERER_OPENGL) {
+        static uint8_t pix[1920 * 1080 * 4];
+        int w = 0, h = 0;
+        if (nv2a_chimera_read_display(pix, 1920, 1080, &w, &h)) {
+            FILE *f = fopen(video_path, "wb");
+            if (f) {
+                uint32_t hdr[3] = { (uint32_t)w, (uint32_t)h, 0 };
+                fwrite(hdr, 4, 3, f);
+                fwrite(pix, 4, (size_t)w * h, f);
+                fclose(f);
+            }
+        }
+    }
 }
 
 /* after qemu_init: it returns holding the BQL and the replay lock; the main
@@ -420,6 +440,7 @@ static void release_and_retake_locks(void)
 #include "io/channel-buffer.h"
 
 static char g_loadError[256];
+static void chimera_find_ram(void);
 
 int main(void)
 {
@@ -462,8 +483,14 @@ ECL_EXPORT int Init(void)
     xemu_settings_set_string(&g_config.sys.files.hdd_path, "hdd");
     FILE *dvdf = fopen("dvd", "rb");
     if (dvdf != NULL) {
+        /* a project with an open tray mounts a zero-byte disc; the drive
+         * wants either a real image or nothing at all */
+        fseek(dvdf, 0, SEEK_END);
+        long dvd_size = ftell(dvdf);
         fclose(dvdf);
-        xemu_settings_set_string(&g_config.sys.files.dvd_path, "dvd");
+        if (dvd_size > 0) {
+            xemu_settings_set_string(&g_config.sys.files.dvd_path, "dvd");
+        }
     }
 
     char *argv[] = {
@@ -476,6 +503,7 @@ ECL_EXPORT int Init(void)
     qemu_init(5, argv);
     release_and_retake_locks();
     chimera_attach_gamepads();
+    chimera_find_ram();
     frame_machinery_init();
     return 1;
 }
@@ -548,6 +576,20 @@ static int g_videoWidth = 640, g_videoHeight = 480;
 
 ECL_EXPORT uint32_t *GetVideoBgra(void)
 {
+    /* With a GPU drawing, the machine's presented frame is the display
+     * pipeline's output - the scanout surface composed with the PVIDEO
+     * overlay, exactly what a television saw. Without one (or before any
+     * surface scans out), the VGA view of RAM below is the truth. */
+    if (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_OPENGL) {
+        int w = 0, h = 0;
+        if (nv2a_chimera_read_display((uint8_t *)g_video, CHIMERA_MAX_W,
+                                      CHIMERA_MAX_H, &w, &h)) {
+            g_videoWidth = w;
+            g_videoHeight = h;
+            return g_video;
+        }
+    }
+
     QemuConsole *con = qemu_console_lookup_by_index(0);
     DisplaySurface *surf = con ? qemu_console_surface(con) : NULL;
     if (surf == NULL || surface_is_placeholder(surf)) {
@@ -574,6 +616,50 @@ ECL_EXPORT int GetVideoWidth(void)
 ECL_EXPORT int GetVideoHeight(void)
 {
     return g_videoHeight;
+}
+
+/* ---- memory domains: the machine's RAM, by its real name ----------------
+ * The Xbox is UMA: "xbox.ram" is system RAM, video RAM and the GPU's
+ * working memory all at once (pc.ram exists but is a decoy). One domain,
+ * looked up after the machine exists.
+ */
+#include "exec/cpu-common.h"
+
+static uint8_t *g_ramPtr;
+static int64_t g_ramSize;
+
+static void chimera_find_ram(void)
+{
+    RAMBlock *rb = qemu_ram_block_by_name("xbox.ram");
+    if (rb != NULL) {
+        g_ramPtr = qemu_ram_get_host_addr(rb);
+        g_ramSize = (int64_t)qemu_ram_get_used_length(rb);
+    }
+}
+
+ECL_EXPORT int GetMemoryDomainCount(void)
+{
+    return g_ramPtr != NULL ? 1 : 0;
+}
+
+ECL_EXPORT const char *GetMemoryDomainName(int i)
+{
+    return i == 0 ? "System RAM" : NULL;
+}
+
+ECL_EXPORT uint8_t *GetMemoryDomainPtr(int i)
+{
+    return i == 0 ? g_ramPtr : NULL;
+}
+
+ECL_EXPORT int64_t GetMemoryDomainSize(int i)
+{
+    return i == 0 ? g_ramSize : 0;
+}
+
+ECL_EXPORT int GetMemoryDomainWritable(int i)
+{
+    return i == 0 ? 1 : 0;
 }
 
 /* the gate artifact: the whole-machine migration stream. The buffer channel

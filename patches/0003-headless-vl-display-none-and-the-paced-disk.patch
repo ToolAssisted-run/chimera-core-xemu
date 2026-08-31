@@ -1,5 +1,36 @@
+diff --git a/hw/xbox/smbus_storage.c b/hw/xbox/smbus_storage.c
+index e2e0497b26..ccd8690307 100644
+--- a/hw/xbox/smbus_storage.c
++++ b/hw/xbox/smbus_storage.c
+@@ -53,6 +53,10 @@ typedef struct SMBusStorageDevice {
+     bool persist;
+ } SMBusStorageDevice;
+ 
++/* CHIMERA: the frozen identity a machine falls back to when no EEPROM file
++ * is supplied (see waterbox/default-eeprom.c) */
++extern const uint8_t chimera_default_eeprom[256];
++
+ static void smbus_storage_realize(DeviceState *dev, Error **errp)
+ {
+     SMBusStorageDevice *s = SMBUS_STORAGE(dev);
+@@ -63,6 +67,15 @@ static void smbus_storage_realize(DeviceState *dev, Error **errp)
+     if (s->file) {
+         int size = get_image_size(s->file, NULL);
+         if (size != s->size) {
++            /* CHIMERA: no file (or a wrong one) means the frozen default
++             * identity, not a dead machine - a sandbox cannot mint one to
++             * disk the way the desktop build does */
++            if (s->size == (int)sizeof(chimera_default_eeprom)) {
++                fprintf(stderr, "smbus-storage: '%s' unusable; using the "
++                        "built-in default EEPROM\n", s->file);
++                memcpy(s->data, chimera_default_eeprom, s->size);
++                return;
++            }
+             error_setg(errp, "%s: file '%s' size of %d, expected %d\n",
+                 __func__, s->file, size, s->size);
+             return;
 diff --git a/system/vl.c b/system/vl.c
-index f45bdc3458..d47c13b10f 100644
+index f45bdc3458..0198665145 100644
 --- a/system/vl.c
 +++ b/system/vl.c
 @@ -662,7 +662,12 @@ static int drive_init_func(void *opaque, QemuOpts *opts, Error **errp)
@@ -16,7 +47,49 @@ index f45bdc3458..d47c13b10f 100644
  
      Error *error_warn = NULL;
      bool failed = drive_new(opts, *block_default_type, is_cdrom_with_file ? &error_warn : errp) == NULL;
-@@ -3066,9 +3071,35 @@ void qemu_init(int argc, char **argv)
+@@ -2917,32 +2922,21 @@ static const char *get_eeprom_path(void)
+ 
+     if (qemu_access(path, F_OK) == -1) {
+         if (!xbox_eeprom_generate(path, XBOX_EEPROM_VERSION_R1)) {
+-            char *msg = g_strdup_printf("Failed to generate EEPROM file '%s'."
+-                                        "\n\nPlease check machine settings.",
+-                                        path);
+-            xemu_queue_error_message(msg);
+-            g_free(msg);
+-            return NULL;
++            /* CHIMERA: a sandbox cannot create files; the smbus-storage
++             * device falls back to the built-in default identity instead */
++            fprintf(stderr, "eeprom: cannot mint '%s'; the machine will use "
++                    "the built-in default\n", path);
++            return path;
+         }
+     }
+ 
+     int size = get_image_size(path, NULL);
+ 
+-    if (size < 0) {
+-        char *msg = g_strdup_printf("Failed to open EEPROM file '%s'.\n\n"
+-                                    "Please check machine settings.", path);
+-        xemu_queue_error_message(msg);
+-        g_free(msg);
+-        return NULL;
+-    }
+-
+     if (size != 256) {
+-        char *msg = g_strdup_printf(
+-            "Invalid EEPROM file '%s' size of %d; should be 256 bytes.\n\n"
+-            "Please check machine settings.", path, size);
+-        xemu_queue_error_message(msg);
+-        g_free(msg);
+-        return NULL;
++        /* CHIMERA: unusable file - the smbus-storage device falls back to
++         * the built-in default identity rather than refusing to boot */
++        fprintf(stderr, "eeprom: '%s' unusable (size %d); the machine will "
++                "use the built-in default\n", path, size);
+     }
+ 
+     return path;
+@@ -3066,9 +3060,35 @@ void qemu_init(int argc, char **argv)
          } else {
              fake_argv[fake_argc++] = strdup("-drive");
              char *escaped_hdd_path = strdup_double_commas(hdd_path);
@@ -52,7 +125,7 @@ index f45bdc3458..d47c13b10f 100644
              free(escaped_hdd_path);
          }
      }
-@@ -3090,12 +3121,33 @@ void qemu_init(int argc, char **argv)
+@@ -3090,12 +3110,33 @@ void qemu_init(int argc, char **argv)
      // connected but no media present.
      fake_argv[fake_argc++] = strdup("-drive");
      char *escaped_dvd_path = strdup_double_commas(dvd_path);

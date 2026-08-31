@@ -28,10 +28,10 @@ index 1fa1aa9a15..aedbc07ca7 100644
      }
  
 diff --git a/hw/xbox/nv2a/pgraph/gl/display.c b/hw/xbox/nv2a/pgraph/gl/display.c
-index fafcd72061..552e702361 100644
+index fafcd72061..46e0ddf78f 100644
 --- a/hw/xbox/nv2a/pgraph/gl/display.c
 +++ b/hw/xbox/nv2a/pgraph/gl/display.c
-@@ -434,6 +434,7 @@ int pgraph_gl_get_framebuffer_surface(NV2AState *d)
+@@ -434,7 +434,42 @@ int pgraph_gl_get_framebuffer_surface(NV2AState *d)
      qatomic_set(&pg->sync_pending, true);
      pfifo_kick(d);
      qemu_mutex_unlock(&d->pfifo.lock);
@@ -39,6 +39,41 @@ index fafcd72061..552e702361 100644
      qemu_event_wait(&d->pgraph.sync_complete);
  
      return r->gl_display_buffer;
+ }
++
++/* CHIMERA: the true presented frame, out of the machine. Runs the same sync
++ * the GUI's scanout runs - the surface is composed (PVIDEO overlay and all)
++ * into gl_display_buffer in the display context - then reads it back BGRA.
++ * Called from the driver at the frame boundary while the machine is paused;
++ * returns 0 when no surface scans out (the caller falls back to the VGA
++ * view of RAM, which is also what a machine that never lit the GPU shows).
++ */
++int nv2a_chimera_read_display(uint8_t *out, int cap_w, int cap_h,
++                              int *out_w, int *out_h)
++{
++    NV2AState *d = g_nv2a;
++    if (d == NULL || d->pgraph.gl_renderer_state == NULL) {
++        return 0;
++    }
++    if (pgraph_gl_get_framebuffer_surface(d) == 0) {
++        return 0;
++    }
++    PGRAPHGLState *r = d->pgraph.gl_renderer_state;
++    int w = r->gl_display_buffer_width, h = r->gl_display_buffer_height;
++    if (w <= 0 || h <= 0 || w > cap_w || h > cap_h) {
++        return 0;
++    }
++    glo_set_current(g_nv2a_context_display);
++    glBindFramebuffer(GL_FRAMEBUFFER, r->disp_rndr.fbo);
++    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                           GL_TEXTURE_2D, r->gl_display_buffer, 0);
++    glo_readpixels(GL_BGRA, GL_UNSIGNED_BYTE, 4, w * 4, w, h, true, out);
++    glBindFramebuffer(GL_FRAMEBUFFER, 0);
++    glo_set_current(g_nv2a_context_render);
++    *out_w = w;
++    *out_h = h;
++    return 1;
++}
 diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.c b/hw/xbox/nv2a/pgraph/gl/renderer.c
 index e9e2109779..6116f477dd 100644
 --- a/hw/xbox/nv2a/pgraph/gl/renderer.c
@@ -59,6 +94,21 @@ index e9e2109779..6116f477dd 100644
      qemu_event_wait(&r->shader_cache_writeback_complete);
  }
  
+diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.h b/hw/xbox/nv2a/pgraph/gl/renderer.h
+index 9b9d9bfb02..b52521b411 100644
+--- a/hw/xbox/nv2a/pgraph/gl/renderer.h
++++ b/hw/xbox/nv2a/pgraph/gl/renderer.h
+@@ -36,6 +36,10 @@
+ #include "hw/xbox/nv2a/pgraph/glsl/shaders.h"
+ 
+ #include "gloffscreen.h"
++
++/* CHIMERA: the presented frame, read back for the driver's video export */
++int nv2a_chimera_read_display(uint8_t *out, int cap_w, int cap_h,
++                              int *out_w, int *out_h);
+ #include "constants.h"
+ 
+ typedef struct SurfaceBinding {
 diff --git a/hw/xbox/nv2a/pgraph/gl/shaders.c b/hw/xbox/nv2a/pgraph/gl/shaders.c
 index 2626cd5930..29667109bc 100644
 --- a/hw/xbox/nv2a/pgraph/gl/shaders.c

@@ -89,6 +89,8 @@ int main(int argc, char **argv)
     const char *wbx = 0, *mcpx = 0, *bios = 0, *eeprom = 0, *hdd = 0, *dvd = 0;
     const char *stateOut = 0;
     const char *videoOut = 0;
+    const char *ramOut = 0;
+    long ramBytes = 1048576;
     const char *audioOut = 0;
     long frames = 60;
     int press_port = -1, press_from = 0, press_to = 0;
@@ -104,6 +106,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = strtol(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--state-out") && i + 1 < argc) stateOut = argv[++i];
         else if (!strcmp(argv[i], "--video-out") && i + 1 < argc) videoOut = argv[++i];
+        else if (!strcmp(argv[i], "--ram-out") && i + 1 < argc) ramOut = argv[++i];
+        else if (!strcmp(argv[i], "--ram-bytes") && i + 1 < argc) ramBytes = strtol(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--audio-out") && i + 1 < argc) audioOut = argv[++i];
         else if (!strcmp(argv[i], "--press") && i + 1 < argc) {
             if (sscanf(argv[++i], "%d:%x:%d:%d", &press_port, &press_mask,
@@ -248,6 +252,24 @@ int main(int argc, char **argv)
         fwrite(pix, 4, (size_t)w * ht, f);
         fclose(f);
         fprintf(stderr, "run-wbx: video %dx%d written to %s\n", w, ht, videoOut);
+    }
+
+    if (ramOut) {
+        typedef uint8_t *(*ptrfn_i)(int);
+        typedef int64_t (*i64fn_i)(int);
+        ptrfn_i GetMemoryDomainPtr = (ptrfn_i)proc(h, "GetMemoryDomainPtr");
+        i64fn_i GetMemoryDomainSize = (i64fn_i)proc(h, "GetMemoryDomainSize");
+        uint8_t *ram = GetMemoryDomainPtr(0);
+        int64_t size = GetMemoryDomainSize(0);
+        if (ram && size > 0) {
+            if (ramBytes > size) ramBytes = size;
+            FILE *f = fopen(ramOut, "wb");
+            if (!f) { fprintf(stderr, "cannot write %s\n", ramOut); return 1; }
+            fwrite(ram, 1, (size_t)ramBytes, f);
+            fclose(f);
+            fprintf(stderr, "run-wbx: %ld bytes of System RAM (of %lld) written to %s\n",
+                    ramBytes, (long long)size, ramOut);
+        }
     }
 
     wbx_deactivate_host(h, &r);

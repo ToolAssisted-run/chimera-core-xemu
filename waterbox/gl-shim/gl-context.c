@@ -21,7 +21,15 @@
 
 #ifdef CHIMERA_GUEST
 
-struct _GloContext { int created; };
+/* The host has ONE real context; upstream's renderer has TWO (render and
+ * display) and leans on per-context binding persistence - surface.c binds
+ * its framebuffer once at init and trusts it across frames while display.c
+ * binds its own on the other context. These are the bindings each VIRTUAL
+ * context must therefore carry across switches on the shared real one. */
+struct _GloContext {
+    int created;
+    GLint fbo_draw, fbo_read, vao, program, active_texture;
+};
 
 #include <stdint.h>
 #include "gl-bridge.h" /* miniBox source/gl: the shared contract */
@@ -61,12 +69,32 @@ GloContext *glo_context_create(void)
         abort();
     }
     guest_contexts[guest_context_count].created = 1;
+    guest_contexts[guest_context_count].active_texture = GL_TEXTURE0;
     return &guest_contexts[guest_context_count++];
 }
 
 void glo_set_current(GloContext *context)
 {
+    if (context == guest_current) {
+        return;
+    }
+    if (guest_current != NULL && g_bridged) {
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &guest_current->fbo_draw);
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &guest_current->fbo_read);
+        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &guest_current->vao);
+        glGetIntegerv(GL_CURRENT_PROGRAM, &guest_current->program);
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &guest_current->active_texture);
+    }
     guest_current = context;
+    if (context != NULL && g_bridged) {
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)context->fbo_draw);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)context->fbo_read);
+        glBindVertexArray((GLuint)context->vao);
+        glUseProgram((GLuint)context->program);
+        if (context->active_texture != 0) {
+            glActiveTexture((GLenum)context->active_texture);
+        }
+    }
 }
 
 void glo_ensure_current(void)

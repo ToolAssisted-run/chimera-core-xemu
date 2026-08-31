@@ -1,0 +1,246 @@
+{
+  "_comment": [
+    "Default bindings for the four Duke pads this package declares. The face layout follows",
+    "the Xbox controller: A lower-left, B lower-right, X upper-left, Y upper-right - mapped",
+    "onto the same keyboard cluster every other core uses (X/Z/S/A) so hands do not relearn.",
+    "White and Black ride the shoulder buttons on a modern pad, Q/W on the keyboard. The",
+    "triggers are ANALOG axes; on the keyboard C and V press them fully, which is what a",
+    "digital key can honestly do. Player 1 keeps the keyboard as well as the first pad;",
+    "players 2 to 4 get a pad each and no keys."
+  ],
+  "AllTrollers": {
+    "Xbox Controller": {
+      "P1 A": "X, J1 B2, X1 A",
+      "P1 B": "Z, J1 B3, X1 B",
+      "P1 X": "S, J1 B1, X1 X",
+      "P1 Y": "A, J1 B4, X1 Y",
+      "P1 DPad Left": "Left, J1 POV1L, X1 DpadLeft, X1 LStickLeft",
+      "P1 DPad Up": "Up, J1 POV1U, X1 DpadUp, X1 LStickUp",
+      "P1 DPad Right": "Right, J1 POV1R, X1 DpadRight, X1 LStickRight",
+      "P1 DPad Down": "Down, J1 POV1D, X1 DpadDown, X1 LStickDown",
+      "P1 Back": "Backspace, J1 B9, X1 Back",
+      "P1 Start": "Enter, J1 B10, X1 Start",
+      "P1 White": "Q, J1 B5, X1 LeftShoulder",
+      "P1 Black": "W, J1 B6, X1 RightShoulder",
+      "P1 LStick Click": "E, J1 B11, X1 LeftThumb",
+      "P1 RStick Click": "R, J1 B12, X1 RightThumb",
+      "P2 A": "J2 B2, X2 A",
+      "P2 B": "J2 B3, X2 B",
+      "P2 X": "J2 B1, X2 X",
+      "P2 Y": "J2 B4, X2 Y",
+      "P2 DPad Left": "J2 POV1L, X2 DpadLeft, X2 LStickLeft",
+      "P2 DPad Up": "J2 POV1U, X2 DpadUp, X2 LStickUp",
+      "P2 DPad Right": "J2 POV1R, X2 DpadRight, X2 LStickRight",
+      "P2 DPad Down": "J2 POV1D, X2 DpadDown, X2 LStickDown",
+      "P2 Back": "J2 B9, X2 Back",
+      "P2 Start": "J2 B10, X2 Start",
+      "P2 White": "J2 B5, X2 LeftShoulder",
+      "P2 Black": "J2 B6, X2 RightShoulder",
+      "P2 LStick Click": "J2 B11, X2 LeftThumb",
+      "P2 RStick Click": "J2 B12, X2 RightThumb",
+      "P3 A": "J3 B2, X3 A",
+      "P3 B": "J3 B3, X3 B",
+      "P3 X": "J3 B1, X3 X",
+      "P3 Y": "J3 B4, X3 Y",
+      "P3 DPad Left": "J3 POV1L, X3 DpadLeft, X3 LStickLeft",
+      "P3 DPad Up": "J3 POV1U, X3 DpadUp, X3 LStickUp",
+      "P3 DPad Right": "J3 POV1R, X3 DpadRight, X3 LStickRight",
+      "P3 DPad Down": "J3 POV1D, X3 DpadDown, X3 LStickDown",
+      "P3 Back": "J3 B9, X3 Back",
+      "P3 Start": "J3 B10, X3 Start",
+      "P3 White": "J3 B5, X3 LeftShoulder",
+      "P3 Black": "J3 B6, X3 RightShoulder",
+      "P3 LStick Click": "J3 B11, X3 LeftThumb",
+      "P3 RStick Click": "J3 B12, X3 RightThumb",
+      "P4 A": "J4 B2, X4 A",
+      "P4 B": "J4 B3, X4 B",
+      "P4 X": "J4 B1, X4 X",
+      "P4 Y": "J4 B4, X4 Y",
+      "P4 DPad Left": "J4 POV1L, X4 DpadLeft, X4 LStickLeft",
+      "P4 DPad Up": "J4 POV1U, X4 DpadUp, X4 LStickUp",
+      "P4 DPad Right": "J4 POV1R, X4 DpadRight, X4 LStickRight",
+      "P4 DPad Down": "J4 POV1D, X4 DpadDown, X4 LStickDown",
+      "P4 Back": "J4 B9, X4 Back",
+      "P4 Start": "J4 B10, X4 Start",
+      "P4 White": "J4 B5, X4 LeftShoulder",
+      "P4 Black": "J4 B6, X4 RightShoulder",
+      "P4 LStick Click": "J4 B11, X4 LeftThumb",
+      "P4 RStick Click": "J4 B12, X4 RightThumb"
+    }
+  },
+  "AllTrollersAutoFire": {
+    "Xbox Controller": {}
+  },
+  "AllTrollersAnalog": {
+    "Xbox Controller": {
+      "P1 Stick X": {
+        "Value": "X1 LeftThumbX Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P1 Stick Y": {
+        "Value": "X1 LeftThumbY Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P1 RStick X": {
+        "Value": "X1 RightThumbX Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P1 RStick Y": {
+        "Value": "X1 RightThumbY Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P1 Left Trigger": {
+        "Value": "X1 LeftTrigger Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.0,
+        "ButtonBindPositive": "C",
+        "ButtonBindNegative": ""
+      },
+      "P1 Right Trigger": {
+        "Value": "X1 RightTrigger Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.0,
+        "ButtonBindPositive": "V",
+        "ButtonBindNegative": ""
+      },
+      "P2 Stick X": {
+        "Value": "X2 LeftThumbX Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P2 Stick Y": {
+        "Value": "X2 LeftThumbY Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P2 RStick X": {
+        "Value": "X2 RightThumbX Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P2 RStick Y": {
+        "Value": "X2 RightThumbY Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P2 Left Trigger": {
+        "Value": "X2 LeftTrigger Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.0,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P2 Right Trigger": {
+        "Value": "X2 RightTrigger Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.0,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P3 Stick X": {
+        "Value": "X3 LeftThumbX Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P3 Stick Y": {
+        "Value": "X3 LeftThumbY Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P3 RStick X": {
+        "Value": "X3 RightThumbX Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P3 RStick Y": {
+        "Value": "X3 RightThumbY Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P3 Left Trigger": {
+        "Value": "X3 LeftTrigger Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.0,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P3 Right Trigger": {
+        "Value": "X3 RightTrigger Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.0,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P4 Stick X": {
+        "Value": "X4 LeftThumbX Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P4 Stick Y": {
+        "Value": "X4 LeftThumbY Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P4 RStick X": {
+        "Value": "X4 RightThumbX Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P4 RStick Y": {
+        "Value": "X4 RightThumbY Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.1,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P4 Left Trigger": {
+        "Value": "X4 LeftTrigger Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.0,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      },
+      "P4 Right Trigger": {
+        "Value": "X4 RightTrigger Axis",
+        "Mult": 1.0,
+        "Deadzone": 0.0,
+        "ButtonBindPositive": "",
+        "ButtonBindNegative": ""
+      }
+    }
+  }
+}

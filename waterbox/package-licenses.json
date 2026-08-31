@@ -1,0 +1,60 @@
+{
+  "package": "xemu",
+  "effectiveTerms": "GPL-2.0-or-later",
+  "commercialUse": "allowed under the GPL",
+  "note": "The built core combines this repository's integration with xemu, itself a fork of QEMU; both are GPL-2.0-or-later and the whole is distributed under those terms. The vendored pieces are permissive: glad is generated code under MIT/Apache-2.0 terms, libsamplerate is BSD-2-Clause, the deterministic powf/pow are musl's (MIT), and the NV2A vertex shader translator is MIT.",
+  "components": [
+    {
+      "name": "chimera-core-xemu (integration)",
+      "license": "MIT, and xemu's terms for patches/",
+      "url": "https://github.com/ToolAssisted-run/chimera-core-xemu",
+      "commit": "{selfCommit}",
+      "file": "LICENSE",
+      "sourceUrl": "https://github.com/ToolAssisted-run/chimera-core-xemu/archive/{commit}.tar.gz"
+    },
+    {
+      "name": "xemu (QEMU fork)",
+      "license": "GPL-2.0-or-later (with LGPL-2.1 parts)",
+      "url": "https://xemu.app",
+      "commit": "{submodule:extern/xemu}",
+      "file": "extern/xemu/COPYING",
+      "sourceUrl": "https://github.com/xemu-project/xemu/archive/{commit}.tar.gz"
+    },
+    {
+      "name": "QEMU (the machine emulator xemu is built on)",
+      "license": "GPL-2.0-only overall; many files LGPL-2.1 and MIT",
+      "url": "https://www.qemu.org",
+      "file": "extern/xemu/COPYING.LIB"
+    },
+    {
+      "name": "libsamplerate (vendored, SINC_FASTEST only)",
+      "license": "BSD-2-Clause",
+      "url": "https://github.com/libsndfile/libsamplerate",
+      "file": "waterbox/samplerate/COPYING"
+    },
+    {
+      "name": "musl powf/pow (waterbox/det-pow.c, from ARM optimized-routines)",
+      "license": "MIT",
+      "url": "https://musl.libc.org",
+      "file": "waterbox/det-pow.c"
+    },
+    {
+      "name": "glad (generated OpenGL loader)",
+      "license": "generated code: public domain / WTFPL / CC0; generator MIT",
+      "url": "https://github.com/Dav1dde/glad",
+      "file": "waterbox/glad/include/glad/gl.h"
+    },
+    {
+      "name": "nv2a_vsh_cpu (NV2A vertex shader translator)",
+      "license": "MIT",
+      "url": "https://github.com/abaire/nv2a_vsh_cpu",
+      "file": "extern/xemu/subprojects/nv2a_vsh_cpu/LICENSE"
+    },
+    {
+      "name": "gloffscreen (rebuilt over glad in pgraph/chimera-gl)",
+      "license": "MIT",
+      "url": "https://github.com/xemu-project/xemu",
+      "file": "extern/xemu/hw/xbox/nv2a/pgraph/thirdparty/gloffscreen/gloffscreen.h"
+    }
+  ]
+}

@@ -253,14 +253,68 @@ What the port took:
   design) + the full-list generated dispatcher + glad, handed over as
   SetGpuBridge BEFORE Init, CHIMERA_GPU=1 to ask.
 
-Still open in M4: the exported picture under GL is the VGA scanout of RAM,
-which shows what was downloaded - the PVIDEO overlay (Prince of Persia's
-FMVs) and upscaled rendering only appear through the GL display pipeline
-(pgraph_gl_get_framebuffer_surface), which GetVideoBgra does not use yet;
-savestates under an active GL renderer are untested (GL objects are
-outside the arena; the machine's own surface data is IN RAM, so reload
-should rebuild, but nothing proves it); Windows and real hardware remain
-unproven for the bridge generally.
+The display pipeline is the export now: under GL, GetVideoBgra calls
+nv2a_chimera_read_display (display.c) - the same sync the GUI's scanout
+runs composes the surface AND the PVIDEO overlay into gl_display_buffer in
+the display context, and the result reads back BGRA. Prince of Persia's
+intro FMV, invisible to every earlier export, shows. The native binary
+dumps the same picture via CHIMERA_VIDEO_OUT. When no surface scans out
+(or no GPU), the VGA view of RAM stays the truth.
+
+Real game rendering flushed out one more determinism bug: pfifo_kick armed
+its drain timer at "now", and with GL the RAM-access surface hooks kick
+from the MIDDLE of a translation block, where reading the virtual clock is
+illegal under icount ("Bad icount read", a crash ~40s into PoP). The
+deadline is 0 now - always expired, no clock read, fires at the same
+deterministic processing points.
+
+Savestates under an active GL renderer round-trip exactly (the gpu
+rerecord check: arena saved and reloaded around every frame, end state
+byte-identical) - the host context outlives the load, so the arena's GL
+object ids stay matched. A CROSS-SESSION load (movie playback from a cold
+start) would find those objects gone; that is M5's problem, along with
+Windows and real hardware for the bridge generally.
+
+## M5 status: a real core package, loaded by the real frontend
+
+`waterbox/build-package.sh` builds `xemu.chimeraCore` into a chimera
+checkout's `build/Cores/` - core.wbx (check-wbx clean: no TLS, no %fs),
+waterbox.config, the Duke keybinds, the wizard's file slots, and the
+licences resolved by miniBox's packager (GPL-2.0-or-later overall). The
+frontend discovers packages from that directory; there is no registration
+step beyond the package itself. Chimera-side: XBOX joined SystemNames, and
+extern/cores/xemu is a submodule.
+
+The declarations worth knowing:
+- vsync is EXACTLY the driver's quantum: 1000000000/16666667 - both places
+  derive from VBLANK_NS.
+- The button list is in packed-bit order (xemu's CONTROLLER_BUTTON enum)
+  and the axes in SetAxis index order; reordering either breaks the wire.
+- Firmware ids are the driver's mount names: mcpx, bios, hdd - and eeprom,
+  which is OPTIONAL: without one the machine uses a frozen built-in
+  identity (waterbox/default-eeprom.c, minted once by xemu's own generator
+  and embedded), proven byte-identical to mounting the same bytes. One
+  identity for everyone is what movies want.
+- An Xbox project's disc slot is min 0: an empty tray boots the dashboard
+  from the hard disk, and the driver ignores the zero-byte "dvd" mount an
+  empty slot produces.
+- One memory domain, "System RAM" - the real xbox.ram block (pc.ram is a
+  decoy), 64MB, writable, for Lua and RAM watch.
+
+`waterbox/tests/run-frontend.sh` is the frontend half of the gate: boot
+the package inside Chimera (Mono, headless, Xvfb), null renderer, and
+require the frontend machine's System RAM slice to be byte-identical to
+run-wbx's (which the core gate holds equal to the native build); then the
+same with the GPU on both sides; then the package's keybinds adopted as
+the frontend's defaults.
+
+Still open beyond Windows: cross-session savestate load under an active
+GL renderer (the arena's GL object ids dangle in a fresh host context -
+same-session loads are proven exact; a movie resumed from a cold start
+with a GPU needs a renderer rebuild on load), and persistent save export
+(the HDD overlay lives in guest memory, so saves persist through
+savestates and movies but are not yet exported as files between
+sessions).
 
 ## The native determinism story (still true, prerequisite)
 

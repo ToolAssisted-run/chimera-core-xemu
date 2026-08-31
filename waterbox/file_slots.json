@@ -1,0 +1,16 @@
+{
+  "_comment": "The core-declared file form for chimera's project wizard: an Xbox project is one DVD image. The machine can also boot straight to its dashboard from the hard disk, so the disc is optional - an empty tray is a valid machine.",
+  "slots": [
+    {
+      "id": "dvd",
+      "title": "Disc",
+      "min": 0,
+      "max": 1,
+      "formats": [
+        "iso",
+        "xiso"
+      ],
+      "help": "The game disc as an xiso image (.iso). Leave it empty and the machine boots to its dashboard from the hard disk image instead - the tray is simply open."
+    }
+  ]
+}

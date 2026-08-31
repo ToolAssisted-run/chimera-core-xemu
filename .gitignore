@@ -1,2 +1,12 @@
 build/
 minibox-diag.log
+# analyze-migration -x extraction droppings - some are FIRMWARE and must
+# never be committed
+xbox.ram
+xbox.bios
+xbox.mcpx
+pc.ram
+desc.json
+state.json
+pci.0*/
+waterbox/tests/work/
