@@ -65,3 +65,51 @@ cpp_link_args = ['-specs', '$sr/lib/musl-gcc.specs']
 EOF
 
 echo "cross file written: $cross"
+
+# ---- guest QEMU toolchain wrappers ----------------------------------------
+# xemu's configure needs a --cross-prefix toolchain: wrappers that inject the
+# musl specs exactly once (the specs file is not idempotent), give g++ the
+# guest libstdc++ headers, append the waterbox link recipe only when actually
+# linking, and confine pkg-config to the guest deps.
+deps="$root/build/guest-deps"
+bin="$root/build/guest-bin"
+mkdir -p "$bin"
+mbo="$mbuild/source/guest"
+
+{
+	echo '#!/bin/sh'
+	echo 'case " $* " in'
+	echo '*" -c "*|*" -E "*|*" -S "*|*"--version"*|*"-dumpmachine"*)'
+	echo "	exec gcc -specs \"$sr/lib/musl-gcc.specs\" \"\$@\" ;;"
+	echo 'esac'
+	echo "exec gcc -specs \"$sr/lib/musl-gcc.specs\" \"\$@\" -Wl,--no-relax -Wl,-z,stack-size=8388608 -Wl,-u,pthread_once -Wl,-u,pthread_cond_wait -Wl,-u,pthread_cond_broadcast -Wl,-u,pthread_key_create \"$mbo/cxxglue.c.o\" \"$mbo/emulibc.c.o\" -L\"$sr/lib\" -lstdc++ -lgcc -lgcc_eh -lc"
+} > "$root/build/guest-cc"
+sed "s|exec gcc -specs \"$sr/lib/musl-gcc.specs\" \"\$@\"|exec g++ -specs \"$sr/lib/musl-gcc.specs\" -I\"$sr/include/c++/$gccver\" -I\"$sr/include/c++/$gccver/x86_64-linux-musl\" \"\$@\"|g" "$root/build/guest-cc" > "$root/build/guest-cxx"
+chmod +x "$root/build/guest-cc" "$root/build/guest-cxx"
+
+for t in ar strip ranlib nm objcopy ld; do
+	ln -sf "$(command -v $t)" "$bin/x86_64-chimera-linux-musl-$t"
+done
+ln -sf "$root/build/guest-cc" "$bin/x86_64-chimera-linux-musl-gcc"
+ln -sf "$root/build/guest-cxx" "$bin/x86_64-chimera-linux-musl-g++"
+{
+	echo '#!/bin/sh'
+	echo "PKG_CONFIG_LIBDIR=\"$deps/lib/pkgconfig:$deps/lib/x86_64-linux-gnu/pkgconfig:$deps/share/pkgconfig\" exec pkg-config \"\$@\""
+} > "$bin/x86_64-chimera-linux-musl-pkg-config"
+chmod +x "$bin/x86_64-chimera-linux-musl-pkg-config"
+echo "guest toolchain wrappers written: $bin"
+
+# ---- configure the guest QEMU ---------------------------------------------
+sh "$here/apply-patches.sh"
+mkdir -p "$root/build/qemu-guest"
+cd "$root/build/qemu-guest"
+"$root/extern/xemu/configure" \
+	--cross-prefix="$bin/x86_64-chimera-linux-musl-" \
+	--target-list=i386-softmmu \
+	--extra-cflags="-mcmodel=large -mstack-protector-guard=global -fno-stack-protector -fno-pic -fno-pie -fcf-protection=none -DXBOX=1 -I$deps/include -Wno-error" \
+	--extra-ldflags="-static -no-pie" \
+	--enable-pixman --static --disable-werror \
+	--disable-sdl --disable-opengl --disable-gtk --disable-vnc \
+	--disable-slirp --disable-docs --disable-tools --disable-guest-agent \
+	--audio-drv-list= --disable-kvm --disable-xen
+echo "guest build configured: ninja -C build/qemu-guest qemu-system-i386"

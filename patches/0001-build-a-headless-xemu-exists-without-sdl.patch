@@ -10,6 +10,32 @@ index 34b1b2a306..eb12852c85 100644
  system_ss.add(files('block-ram-registrar.c'))
  
  if get_option('qcow1').allowed()
+diff --git a/hw/xbox/mcpx/apu/dsp/meson.build b/hw/xbox/mcpx/apu/dsp/meson.build
+index 3429547e24..aa123c592b 100644
+--- a/hw/xbox/mcpx/apu/dsp/meson.build
++++ b/hw/xbox/mcpx/apu/dsp/meson.build
+@@ -1,10 +1,19 @@
+-dsp56300_emu_ffi = dependency('dsp56300-emu-ffi', fallback: ['dsp56300', 'dsp56300_dep'])
++# CHIMERA: the dsp56300 wrap is a prebuilt glibc Rust archive - it cannot
++# enter the waterbox. Cross builds run the C interpreter (use_dsp_jit=false)
++# and stub the JIT entry point.
++if meson.is_cross_build()
++  dsp56300_emu_ffi = declare_dependency()
++  dsp_jit_src = files('dsp-jit-null.c')
++else
++  dsp56300_emu_ffi = dependency('dsp56300-emu-ffi', fallback: ['dsp56300', 'dsp56300_dep'])
++  dsp_jit_src = files('dsp_jit.c')
++endif
+ 
+ subdir('interp')
+ 
+ libdsp = static_library(
+   'dsp',
+-  files(['dsp.c', 'dsp_c.c', 'dsp_jit.c', 'dsp_dma.c']) + genh,
++  files(['dsp.c', 'dsp_c.c', 'dsp_dma.c']) + dsp_jit_src + genh,
+   dependencies: [dsp56300_emu_ffi],
+ )
+ 
 diff --git a/hw/xbox/mcpx/apu/meson.build b/hw/xbox/mcpx/apu/meson.build
 index 9b161a900b..80d289a377 100644
 --- a/hw/xbox/mcpx/apu/meson.build
@@ -92,10 +118,21 @@ index fbc3751ea7..550ee26d01 100644
 +gloffscreen = not_found
 +endif
 diff --git a/meson.build b/meson.build
-index 82e5f5af65..1e49434d22 100644
+index 82e5f5af65..b67a9d15d6 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -1882,10 +1882,11 @@ if not get_option('coreaudio').auto() or (host_os == 'darwin' and have_system)
+@@ -1462,7 +1462,9 @@ endif
+ curl = dependency('libcurl', version: '>=7.29.0',
+                   method: 'pkg-config',
+                   required: false)
+-if not curl.found()
++# CHIMERA: the curl fallback feeds the HUD's updater; a cross (waterbox)
++# build does not carry it, and the guest could not use a TLS stack anyway
++if not curl.found() and not meson.is_cross_build()
+   if host_os == 'windows'
+     curl_platform_opts = ['schannel=enabled', 'sspi=enabled']
+   elif host_os == 'darwin'
+@@ -1882,10 +1884,11 @@ if not get_option('coreaudio').auto() or (host_os == 'darwin' and have_system)
                           required: get_option('coreaudio'))
  endif
  
@@ -109,7 +146,7 @@ index 82e5f5af65..1e49434d22 100644
    # FIXME: Use meson's 'gl' dep
    if host_os == 'darwin'
      opengl_libs=['-framework', 'OpenGL']
-@@ -2390,7 +2391,8 @@ libglslang = not_found
+@@ -2390,7 +2393,8 @@ libglslang = not_found
  if host_os == 'windows'
    vulkan = declare_dependency(compile_args: ['-DVK_USE_PLATFORM_WIN32_KHR'])
  elif host_os == 'linux'
@@ -119,7 +156,7 @@ index 82e5f5af65..1e49434d22 100644
  endif
  
  if vulkan.found()
-@@ -2432,11 +2434,14 @@ if host_os == 'windows'
+@@ -2432,11 +2436,14 @@ if host_os == 'windows'
    libpcap = declare_dependency(include_directories: 'winpcap-loader/include',
                                 link_args: ['-lws2_32'])
  else
@@ -135,7 +172,7 @@ index 82e5f5af65..1e49434d22 100644
  imgui_proj = subproject('imgui', required: true,
                           default_options: [
                             'default_library=static',
-@@ -2462,6 +2467,10 @@ imgui = imgui_proj.get_variable('imgui_dep')
+@@ -2462,6 +2469,10 @@ imgui = imgui_proj.get_variable('imgui_dep')
  implot_proj = subproject('implot', required: true,
                           default_options: ['default_library=static'])
  implot = implot_proj.get_variable('implot_dep')
@@ -146,7 +183,7 @@ index 82e5f5af65..1e49434d22 100644
  
  genconfig_proj = subproject('genconfig', required: true)
  genconfig = genconfig_proj.get_variable('cnode_dep')
-@@ -2704,6 +2713,7 @@ config_host_data.set('CONFIG_RDMA', rdma.found())
+@@ -2704,6 +2715,7 @@ config_host_data.set('CONFIG_RDMA', rdma.found())
  config_host_data.set('CONFIG_RELOCATABLE', get_option('relocatable'))
  config_host_data.set('CONFIG_SAFESTACK', get_option('safe_stack'))
  config_host_data.set('CONFIG_SDL', sdl.found())
@@ -211,3 +248,16 @@ index 86acebb85c..c5307e821b 100644
  system_ss.add_all(xemu_ss)
  
  system_ss.add(when: pixman, if_true: files('console-vc.c'), if_false: files('console-vc-stubs.c'))
+diff --git a/util/meson.build b/util/meson.build
+index d6a50cad51..0ccefb2cf1 100644
+--- a/util/meson.build
++++ b/util/meson.build
+@@ -142,4 +142,7 @@ elif cpu == 's390x'
+   util_ss.add(files('s390x_pci_mmio.c'))
+ endif
+ util_ss.add(files('sha1.c','rc4.c'))
+-util_ss.add([curl, files('http.c')])
++# CHIMERA: positional deps do not gate sourceset files; be explicit
++if curl.found()
++  util_ss.add([curl, files('http.c')])
++endif

@@ -39,6 +39,18 @@
 
 int (*qemu_main)(void);
 
+#ifndef __GLIBC__
+/* The waterbox musl has no signals, and no sigsetjmp. Every QEMU call site
+ * passes savemask=0, which makes sigsetjmp exactly setjmp - and the alias
+ * must be a tail jump, not a C wrapper, or the jmp_buf would capture a
+ * frame that is gone by the time anyone longjmps to it.
+ */
+__asm__(".globl sigsetjmp\n"
+        ".type sigsetjmp,@function\n"
+        "sigsetjmp:\n"
+        "\tjmp setjmp\n");
+#endif
+
 /* ---- input: four ports the harness pokes, no controllers bound yet ------ */
 
 ControllerStateList available_controllers =
