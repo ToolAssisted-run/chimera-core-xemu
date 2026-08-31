@@ -126,9 +126,26 @@ What the real boot flushed out, each found as a hang or a diverging byte:
     releases every sleeper the moment the runstate leaves running - which
     is exactly the delivery model of mechanism 6.
 
-Still open in M2: xid gamepad input (xemu_input_get_bound), a video export
-of the PCRTC scanout (GetVideoBgra reading xbox.ram), savestate round-trip
-on the arena.
+The rest of M2, all gated by `XBOX_DVD_PATH=... run-gate.sh 1200`:
+
+- Input: four Duke pads are always plugged (driver replicates the GUI's
+  usb-hub + usb-xbox-gamepad qdev creation; xid.c polls the pads straight
+  out of the driver's ControllerState array). FrameAdvance's packed word
+  carries 4 x 14 buttons port-major; SetButton/SetAxis carry the rest.
+  A booted game polls from ~frame 974 (vclock 16.2s); the DASHBOARD never
+  starts the OHCI controller at all, so the input leg needs the DVD: hold
+  START from frame 1000, machine must differ from the plain run and
+  native must equal sandbox under the press. The xid in_state is NOT in
+  the migration stream - only input the guest software actually consumed
+  can leave a trace.
+- Video: GetVideoBgra/GetVideoWidth/GetVideoHeight read the console
+  DisplaySurface that the per-frame graphic_hw_update makes the VGA core
+  render out of VRAM (PCRTC start, CRTC mode, nv2a's 15/16/32 bpp hook),
+  pixman-converted to BGRA. Null renderer keeps 3D black until the GPU
+  bridge; the mode logic and scanout path are the real ones.
+- Savestates: the miniBox arena snapshot simply works - run-wbx --rerecord
+  saves and reloads the state around EVERY frame and the machine is
+  byte-identical to the plain run (the gate's savestate leg, 60 frames).
 
 ## The native determinism story (still true, prerequisite)
 

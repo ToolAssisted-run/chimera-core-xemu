@@ -98,4 +98,51 @@ else
 	echo "FAIL: native and sandbox states differ"; fail=1
 fi
 
+# The savestate leg: 60 sandbox frames with the arena saved and reloaded
+# around every one of them - a loaded state must continue exactly like the
+# run it came from, so the end state must match a plain 60-frame run.
+for mode in plain rr; do
+	[ "$mode" = rr ] && extra="--rerecord" || extra=""
+	timeout 590 "$runwbx" "$wbx" \
+		--mcpx "$fw/MCPX Boot ROM/mcpx_1.0.bin" \
+		--bios "$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
+		--eeprom "$run/eeprom-master.bin" \
+		--hdd "$fw/Hard Disk/xbox_hdd.qcow2" \
+		$extra --frames 60 --state-out "$run/state-wbx-$mode-60.bin" \
+		> "$run/leg-wbx-$mode-60.log" 2>&1 || { echo "sandbox $mode-60 leg died"; tail -3 "$run/leg-wbx-$mode-60.log"; fail=1; }
+done
+if cmp -s "$run/state-wbx-plain-60.bin" "$run/state-wbx-rr-60.bin"; then
+	echo "PASS: savestate leg - save+load around every frame changes nothing"
+else
+	echo "FAIL: savestate round-trip diverges"; fail=1
+fi
+
+# The input leg: hold START on pad 1 from frame 1000 on. A booted game polls
+# the pad from ~frame 974 (the dashboard never starts USB at all), so this
+# needs the DVD and at least 1200 frames; the press must leave a different
+# machine than the plain run, and native and sandbox must agree on it.
+if [ -n "${XBOX_DVD_PATH:-}" ] && [ "$frames" -ge 1200 ]; then
+	press="0:200:1000:$frames"
+	XEMU_BASE_PATH="$run" CHIMERA_FRAMES="$frames" CHIMERA_PRESS="$press" \
+		CHIMERA_STATE_OUT="$run/state-nat-press.bin" \
+		timeout 590 "$nat" -config_path "$run/xemu.toml" $QEMU_ARGS \
+		> "$run/leg-nat-press.log" 2>&1 || { echo "native press leg died"; tail -3 "$run/leg-nat-press.log"; fail=1; }
+	timeout 590 "$runwbx" "$wbx" \
+		--mcpx "$fw/MCPX Boot ROM/mcpx_1.0.bin" \
+		--bios "$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
+		--eeprom "$run/eeprom-master.bin" \
+		--hdd "$fw/Hard Disk/xbox_hdd.qcow2" \
+		--dvd "$XBOX_DVD_PATH" \
+		--press "$press" \
+		--frames "$frames" --state-out "$run/state-wbx-press.bin" \
+		> "$run/leg-wbx-press.log" 2>&1 || { echo "sandbox press leg died"; tail -3 "$run/leg-wbx-press.log"; fail=1; }
+	if cmp -s "$run/state-nat-press.bin" "$run/state-nat-A.bin"; then
+		echo "FAIL: the press left no trace in the machine"; fail=1
+	elif cmp -s "$run/state-nat-press.bin" "$run/state-wbx-press.bin"; then
+		echo "PASS: input leg - the press reached the machine, native == sandbox"
+	else
+		echo "FAIL: native and sandbox disagree under input"; fail=1
+	fi
+fi
+
 exit $fail

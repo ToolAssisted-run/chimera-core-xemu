@@ -5,6 +5,10 @@
  *
  * usage: run-wbx <core.wbx> --mcpx F --bios F --eeprom F --hdd F
  *                [--dvd F] [--frames N] [--state-out F]
+ *                [--press port:mask:from:to]
+ *
+ * --press holds a button mask on one pad for a frame range, mirroring the
+ * native binary's CHIMERA_PRESS env - the two halves of the input gate leg.
  */
 #include "minibox.h"
 
@@ -19,11 +23,36 @@ static intptr_t file_read(uintptr_t ud, uint8_t *d, uintptr_t s)
     return (intptr_t)fread(d, 1, s, ((freader *)ud)->f);
 }
 
+/* --rerecord: the miniBox arena snapshot, saved and reloaded around every
+ * frame. A loaded state must continue exactly like the run it came from. */
+typedef struct { uint8_t *b; size_t len, cap, pos; } membuf;
+static int32_t mem_write(uintptr_t ud, const uint8_t *d, uintptr_t n)
+{
+    membuf *m = (membuf *)ud;
+    if (m->len + n > m->cap) {
+        m->cap = (m->len + n) * 2 + 64;
+        m->b = realloc(m->b, m->cap);
+    }
+    memcpy(m->b + m->len, d, n);
+    m->len += n;
+    return 0;
+}
+static intptr_t mem_read(uintptr_t ud, uint8_t *d, uintptr_t n)
+{
+    membuf *m = (membuf *)ud;
+    uintptr_t avail = m->len - m->pos;
+    if (n > avail) n = avail;
+    memcpy(d, m->b + m->pos, n);
+    m->pos += n;
+    return (intptr_t)n;
+}
+
 typedef int (*intfn)(void);
 typedef int64_t (*i64fn)(void);
 typedef void (*framefn)(uint64_t);
 typedef const char *(*strfn)(void);
 typedef uint8_t *(*bytesfn)(void);
+typedef uint32_t *(*pixfn)(void);
 
 static uintptr_t proc(mb_host *h, const char *n)
 {
@@ -50,7 +79,11 @@ int main(int argc, char **argv)
 {
     const char *wbx = 0, *mcpx = 0, *bios = 0, *eeprom = 0, *hdd = 0, *dvd = 0;
     const char *stateOut = 0;
+    const char *videoOut = 0;
     long frames = 60;
+    int press_port = -1, press_from = 0, press_to = 0;
+    unsigned press_mask = 0;
+    int rerecord = 0;
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--mcpx") && i + 1 < argc) mcpx = argv[++i];
@@ -60,6 +93,14 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--dvd") && i + 1 < argc) dvd = argv[++i];
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = strtol(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--state-out") && i + 1 < argc) stateOut = argv[++i];
+        else if (!strcmp(argv[i], "--video-out") && i + 1 < argc) videoOut = argv[++i];
+        else if (!strcmp(argv[i], "--press") && i + 1 < argc) {
+            if (sscanf(argv[++i], "%d:%x:%d:%d", &press_port, &press_mask,
+                       &press_from, &press_to) != 4) {
+                fprintf(stderr, "bad --press %s\n", argv[i]); return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--rerecord")) rerecord = 1;
         else if (!wbx) wbx = argv[i];
         else { fprintf(stderr, "unknown arg %s\n", argv[i]); return 2; }
     }
@@ -114,8 +155,21 @@ int main(int argc, char **argv)
     if (r.error_message[0]) { fprintf(stderr, "seal: %s\n", r.error_message); return 1; }
     wbx_activate_host(h, &r);
 
+    membuf st = { 0 };
     for (long i = 0; i < frames; i++) {
-        FrameAdvance(0);
+        if (rerecord) {
+            st.len = 0;
+            wbx_save_state(h, mem_write, (uintptr_t)&st, &r);
+            if (r.error_message[0]) { fprintf(stderr, "save_state: %s\n", r.error_message); return 1; }
+            st.pos = 0;
+            wbx_load_state(h, mem_read, (uintptr_t)&st, &r);
+            if (r.error_message[0]) { fprintf(stderr, "load_state: %s\n", r.error_message); return 1; }
+        }
+        uint64_t packed = 0;
+        if (press_port >= 0 && i >= press_from && i < press_to) {
+            packed = (uint64_t)press_mask << (press_port * 14);
+        }
+        FrameAdvance(packed);
     }
     fprintf(stderr, "run-wbx: ran %ld frames\n", frames);
 
@@ -129,6 +183,19 @@ int main(int argc, char **argv)
         fclose(f);
         fprintf(stderr, "run-wbx: state written to %s (%lld bytes)\n",
                 stateOut, (long long)size);
+    }
+
+    if (videoOut) {
+        pixfn GetVideoBgra = (pixfn)proc(h, "GetVideoBgra");
+        intfn GetVideoWidth = (intfn)proc(h, "GetVideoWidth");
+        intfn GetVideoHeight = (intfn)proc(h, "GetVideoHeight");
+        uint32_t *pix = GetVideoBgra();
+        int w = GetVideoWidth(), ht = GetVideoHeight();
+        FILE *f = fopen(videoOut, "wb");
+        if (!f) { fprintf(stderr, "cannot write %s\n", videoOut); return 1; }
+        fwrite(pix, 4, (size_t)w * ht, f);
+        fclose(f);
+        fprintf(stderr, "run-wbx: video %dx%d written to %s\n", w, ht, videoOut);
     }
 
     wbx_deactivate_host(h, &r);

@@ -29,6 +29,10 @@
 #include "io/channel-file.h"
 #include "qapi/error.h"
 #include "qemu-main.h"
+#include "monitor/qdev.h"
+#include "qobject/qdict.h"
+#include "qemu/option.h"
+#include "qemu/config-file.h"
 
 #include "ui/xemu-input.h"
 #include "ui/xemu-notifications.h"
@@ -54,10 +58,24 @@ __asm__(".globl sigsetjmp\n"
         "\tjmp setjmp\n");
 #endif
 
-/* ---- input: four ports the harness pokes, no controllers bound yet ------ */
+/* ---- input: four Duke pads, always plugged, driven by the harness -------
+ *
+ * xid.c polls xemu_input_get_bound() on every USB interrupt transfer and
+ * reads buttons/axis straight out of ControllerState. The four pads live
+ * here as plain state the driver writes before each frame; the USB devices
+ * themselves are created once after the machine is up, the same way the
+ * GUI's xemu_input_bind does it (an internal usb-hub per port, the xid
+ * gamepad on its port 1).
+ */
+
+#define CHIMERA_PORTS 4
+#define CHIMERA_BUTTONS 14 /* CONTROLLER_BUTTON_A..RSTICK, the Duke set */
 
 ControllerStateList available_controllers =
     QTAILQ_HEAD_INITIALIZER(available_controllers);
+
+static ControllerState chimera_pads[CHIMERA_PORTS];
+static bool chimera_pads_attached;
 
 int xemu_input_get_test_mode(void)
 {
@@ -66,18 +84,66 @@ int xemu_input_get_test_mode(void)
 
 ControllerState *xemu_input_get_bound(int index)
 {
-    (void)index;
-    return NULL;
+    if (!chimera_pads_attached || index < 0 || index >= CHIMERA_PORTS) {
+        return NULL;
+    }
+    return &chimera_pads[index];
 }
 
 void xemu_input_update_controller(ControllerState *state)
 {
-    (void)state;
+    (void)state; /* nothing to poll: the driver already wrote the state */
 }
 
 void xemu_input_update_rumble(ControllerState *state)
 {
-    (void)state;
+    (void)state; /* rumble lands in chimera_pads[].rumble_l/r; no motor */
+}
+
+static void chimera_attach_gamepads(void)
+{
+    /* the machine's four controller ports sit on these usb ports */
+    static const int port_map[CHIMERA_PORTS] = { 3, 4, 1, 2 };
+
+    /* visible to xid.c before the devices realize: realize paths read the
+     * bound state through xemu_input_get_bound() */
+    for (int i = 0; i < CHIMERA_PORTS; i++) {
+        chimera_pads[i].bound = i;
+    }
+    chimera_pads_attached = true;
+
+    for (int i = 0; i < CHIMERA_PORTS; i++) {
+        char *tmp;
+
+        QDict *hub_qdict = qdict_new();
+        qdict_put_str(hub_qdict, "driver", "usb-hub");
+        tmp = g_strdup_printf("1.%d", port_map[i]);
+        qdict_put_str(hub_qdict, "port", tmp);
+        g_free(tmp);
+        qdict_put_int(hub_qdict, "ports", 3);
+        QemuOpts *hub_opts = qemu_opts_from_qdict(
+            qemu_find_opts("device"), hub_qdict, &error_abort);
+        DeviceState *hub_dev = qdev_device_add(hub_opts, &error_abort);
+
+        QDict *pad_qdict = qdict_new();
+        qdict_put_str(pad_qdict, "driver", DRIVER_DUKE);
+        tmp = g_strdup_printf("gamepad_%d", i);
+        qdict_put_str(pad_qdict, "id", tmp);
+        g_free(tmp);
+        qdict_put_int(pad_qdict, "index", i);
+        tmp = g_strdup_printf("1.%d.1", port_map[i]);
+        qdict_put_str(pad_qdict, "port", tmp);
+        g_free(tmp);
+        QemuOpts *pad_opts = qemu_opts_from_qdict(
+            qemu_find_opts("device"), pad_qdict, &error_abort);
+        DeviceState *pad_dev = qdev_device_add(pad_opts, &error_abort);
+
+        qobject_unref(hub_qdict);
+        qobject_unref(pad_qdict);
+        object_unref(OBJECT(hub_dev));
+        object_unref(OBJECT(pad_dev));
+        chimera_pads[i].device = hub_dev;
+    }
 }
 
 /* ---- UI hooks ------------------------------------------------------------ */
@@ -252,7 +318,25 @@ static void run_frames(long frames)
 {
     frame_machinery_init();
     bool trace = getenv("CHIMERA_TRACE_FRAMES") != NULL;
+
+    /* CHIMERA_PRESS=port:mask:from:to holds a button mask on one pad for a
+     * frame range - the native half of the input gate leg. The sandbox half
+     * is the same pattern fed through FrameAdvance's packed word. */
+    int press_port = -1, press_from = 0, press_to = 0;
+    unsigned press_mask = 0;
+    const char *press = getenv("CHIMERA_PRESS");
+    if (press) {
+        if (sscanf(press, "%d:%x:%d:%d", &press_port, &press_mask,
+                   &press_from, &press_to) != 4) {
+            press_port = -1;
+        }
+    }
+
     for (long i = 0; i < frames; i++) {
+        if (press_port >= 0 && press_port < CHIMERA_PORTS) {
+            chimera_pads[press_port].buttons =
+                (i >= press_from && i < press_to) ? press_mask : 0;
+        }
         run_one_frame();
         if (trace) {
             fprintf(stderr, "frame %ld: late %" PRId64 " ns\n", i,
@@ -331,14 +415,94 @@ ECL_EXPORT int Init(void)
     };
     qemu_init(5, argv);
     release_and_retake_locks();
+    chimera_attach_gamepads();
     frame_machinery_init();
     return 1;
 }
 
-ECL_EXPORT void FrameAdvance(uint64_t unused)
+/* Input rides two channels and a frame takes their union: the packed word
+ * covers all four Duke pads (4 x 14 = 56 bits, port-major in enum bit
+ * order), SetButton/SetAxis cover anything else - the analog sticks and
+ * triggers have no place in a packed word at all. */
+static uint16_t g_setButtons[CHIMERA_PORTS];
+
+ECL_EXPORT void SetButton(int index, int value)
 {
-    (void)unused;
+    int port = index / CHIMERA_BUTTONS, bit = index % CHIMERA_BUTTONS;
+    if (index < 0 || port >= CHIMERA_PORTS) {
+        return;
+    }
+    if (value) {
+        g_setButtons[port] |= 1u << bit;
+    } else {
+        g_setButtons[port] &= ~(1u << bit);
+    }
+}
+
+ECL_EXPORT void SetAxis(int index, int value)
+{
+    int port = index / CONTROLLER_AXIS__COUNT;
+    int axis = index % CONTROLLER_AXIS__COUNT;
+    if (index < 0 || port >= CHIMERA_PORTS) {
+        return;
+    }
+    chimera_pads[port].axis[axis] = (int16_t)value;
+}
+
+ECL_EXPORT void FrameAdvance(uint64_t packed)
+{
+    for (int p = 0; p < CHIMERA_PORTS; p++) {
+        uint16_t bits = (packed >> (p * CHIMERA_BUTTONS)) &
+                        ((1u << CHIMERA_BUTTONS) - 1);
+        chimera_pads[p].buttons = bits | g_setButtons[p];
+    }
     run_one_frame();
+}
+
+/* ---- video: the console surface, which VGA scans out of xbox.ram --------
+ *
+ * Every frame's graphic_hw_update makes the VGA core render the machine's
+ * framebuffer (PCRTC start, CRTC-programmed mode, 15/16/32 bpp) into the
+ * console's DisplaySurface - even with no display attached. Under the null
+ * renderer the GPU never writes VRAM, so 3D stays black; the mechanism and
+ * the mode logic are still the real ones, and CPU-drawn pictures appear.
+ * pixman converts whatever format the surface took to BGRA.
+ */
+#include "ui/surface.h"
+
+#define CHIMERA_MAX_W 1920
+#define CHIMERA_MAX_H 1080
+static uint32_t g_video[CHIMERA_MAX_W * CHIMERA_MAX_H];
+static int g_videoWidth = 640, g_videoHeight = 480;
+
+ECL_EXPORT uint32_t *GetVideoBgra(void)
+{
+    QemuConsole *con = qemu_console_lookup_by_index(0);
+    DisplaySurface *surf = con ? qemu_console_surface(con) : NULL;
+    if (surf == NULL || surface_is_placeholder(surf)) {
+        return g_video;
+    }
+    int w = surface_width(surf), h = surface_height(surf);
+    w = (w > CHIMERA_MAX_W) ? CHIMERA_MAX_W : w;
+    h = (h > CHIMERA_MAX_H) ? CHIMERA_MAX_H : h;
+    pixman_image_t *dst = pixman_image_create_bits_no_clear(
+        PIXMAN_x8r8g8b8, w, h, g_video, w * 4);
+    pixman_image_composite(PIXMAN_OP_SRC, surf->image, NULL, dst,
+                           0, 0, 0, 0, 0, 0, w, h);
+    pixman_image_unref(dst);
+    g_videoWidth = w;
+    g_videoHeight = h;
+    return g_video;
+}
+
+ECL_EXPORT int GetVideoWidth(void)
+{
+    return g_videoWidth;
+}
+
+ECL_EXPORT int GetVideoHeight(void)
+{
+    return g_videoHeight;
 }
 
 /* the gate artifact: the whole-machine migration stream. The buffer channel
@@ -398,6 +562,7 @@ int main(int argc, char **argv)
 
     qemu_init(argc, argv);
     release_and_retake_locks();
+    chimera_attach_gamepads();
 
     const char *frames_env = getenv("CHIMERA_FRAMES");
     if (frames_env) {
