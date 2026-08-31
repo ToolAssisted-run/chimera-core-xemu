@@ -1,0 +1,3 @@
+[submodule "extern/xemu"]
+	path = extern/xemu
+	url = https://github.com/xemu-project/xemu
