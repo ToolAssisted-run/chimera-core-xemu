@@ -26,8 +26,6 @@
 #include "qobject/qdict.h"
 #include "qapi/error.h"
 
-#define CHIMERA_BLK_LATENCY_NS 2000000 /* 2ms of virtual time */
-
 /* cow=on keeps every write in an in-memory overlay of fixed-size chunks and
  * never touches the underlying file: the image stays pristine on disk, the
  * written state lives in (savestated) memory, and the sandbox needs no
@@ -40,10 +38,19 @@ typedef struct ChimeraLatencyState {
     GHashTable *overlay; /* chunk index -> guint8[COW_CHUNK] */
 } ChimeraLatencyState;
 
+static void chimera_latency_vm_state(void *opaque, bool running,
+                                     RunState state);
+
 static int chimera_latency_open(BlockDriverState *bs, QDict *options,
                                 int flags, Error **errp)
 {
     ChimeraLatencyState *st = bs->opaque;
+
+    static bool vm_state_handler_registered;
+    if (!vm_state_handler_registered) {
+        vm_state_handler_registered = true;
+        qemu_add_vm_change_state_handler(chimera_latency_vm_state, NULL);
+    }
 
     st->cow = false;
     const char *cow = qdict_get_try_str(options, "cow");
@@ -131,27 +138,69 @@ chimera_latency_co_getlength(BlockDriverState *bs)
     return bdrv_co_getlength(bs->file->bs);
 }
 
-/* Sleep the calling coroutine until submission time + L on the virtual
- * clock. Runs AFTER the underlying request completed, so the data is
- * there; the guest just does not hear about it early.
+/* Delivery model: every request completes at the NEXT FRAME BOUNDARY (the
+ * vm_stop the driver performs each frame). That instant is a pure virtual
+ * time, identical in the native reference and the sandbox regardless of
+ * their thread models - host-preemptive on one side, cooperative green
+ * threads on the other - so the disk can never carry host scheduling into
+ * the machine. The 0..16.7ms quantized latency is also about what a real
+ * drive does.
+ *
+ * Requests issued while the machine is stopped (device realize probing the
+ * geometry, savevm, and the boundary itself) complete immediately: the
+ * machine observes nothing while stopped.
  */
-static void coroutine_fn chimera_latency_pace(int64_t t_submit)
+typedef struct ChimeraSleeper {
+    Coroutine *co;
+    bool waiting;
+    bool done;
+    bool inserted;
+    QLIST_ENTRY(ChimeraSleeper) next;
+} ChimeraSleeper;
+
+static QLIST_HEAD(, ChimeraSleeper) chimera_sleepers =
+    QLIST_HEAD_INITIALIZER(chimera_sleepers);
+
+static void chimera_latency_vm_state(void *opaque, bool running,
+                                     RunState state)
 {
-    /* Requests issued while the machine is stopped (device realize probing
-     * the geometry, savevm) must complete immediately: the virtual clock is
-     * not advancing, so the sleep would never end - and a stopped machine
-     * observes nothing, so immediate delivery is deterministic anyway. */
+    (void)opaque;
+    (void)state;
+    if (!running) {
+        ChimeraSleeper *s, *tmp;
+        QLIST_FOREACH_SAFE(s, &chimera_sleepers, next, tmp) {
+            if (!s->done) {
+                s->done = true;
+                if (s->waiting) {
+                    qemu_coroutine_enter(s->co);
+                }
+                /* not yet waiting: still inside its host I/O; it will see
+                 * done in pace_end and return without sleeping */
+            }
+        }
+    }
+}
+
+static void coroutine_fn chimera_pace_begin(ChimeraSleeper *s)
+{
+    memset(s, 0, sizeof *s);
+    s->co = qemu_coroutine_self();
     if (!runstate_is_running()) {
+        s->done = true;
         return;
     }
-    int64_t deadline = t_submit + CHIMERA_BLK_LATENCY_NS;
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    if (now < deadline) {
-        qemu_co_sleep_ns(QEMU_CLOCK_VIRTUAL, deadline - now);
-    } else {
-        fprintf(stderr, "chimera-latency: host I/O outlived the %dns virtual "
-                "budget by %" PRId64 "ns - this run is not deterministic\n",
-                CHIMERA_BLK_LATENCY_NS, now - deadline);
+    QLIST_INSERT_HEAD(&chimera_sleepers, s, next);
+    s->inserted = true;
+}
+
+static void coroutine_fn chimera_pace_end(ChimeraSleeper *s)
+{
+    if (!s->done) {
+        s->waiting = true;
+        qemu_coroutine_yield(); /* entered by the boundary vm_stop */
+    }
+    if (s->inserted) {
+        QLIST_REMOVE(s, next);
     }
 }
 
@@ -160,7 +209,13 @@ chimera_latency_co_preadv(BlockDriverState *bs, int64_t offset, int64_t bytes,
                           QEMUIOVector *qiov, BdrvRequestFlags flags)
 {
     ChimeraLatencyState *st = bs->opaque;
-    int64_t t0 = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (getenv("CHIMERA_DEBUG_BLK")) {
+        fprintf(stderr, "[blk] read %s off=%lld n=%lld vclock=%lld\n",
+                bs->filename, (long long)offset, (long long)bytes,
+                (long long)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+    ChimeraSleeper sl;
+    chimera_pace_begin(&sl);
     int ret;
     if (st->cow) {
         guint8 *buf = g_malloc(bytes);
@@ -173,7 +228,7 @@ chimera_latency_co_preadv(BlockDriverState *bs, int64_t offset, int64_t bytes,
     } else {
         ret = bdrv_co_preadv(bs->file, offset, bytes, qiov, flags);
     }
-    chimera_latency_pace(t0);
+    chimera_pace_end(&sl);
     return ret;
 }
 
@@ -182,7 +237,8 @@ chimera_latency_co_pwritev(BlockDriverState *bs, int64_t offset, int64_t bytes,
                            QEMUIOVector *qiov, BdrvRequestFlags flags)
 {
     ChimeraLatencyState *st = bs->opaque;
-    int64_t t0 = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    ChimeraSleeper sl;
+    chimera_pace_begin(&sl);
     int ret = 0;
     if (st->cow) {
         guint8 *buf = g_malloc(bytes);
@@ -199,7 +255,7 @@ chimera_latency_co_pwritev(BlockDriverState *bs, int64_t offset, int64_t bytes,
     } else {
         ret = bdrv_co_pwritev(bs->file, offset, bytes, qiov, flags);
     }
-    chimera_latency_pace(t0);
+    chimera_pace_end(&sl);
     return ret;
 }
 
@@ -208,7 +264,8 @@ chimera_latency_co_pwrite_zeroes(BlockDriverState *bs, int64_t offset,
                                  int64_t bytes, BdrvRequestFlags flags)
 {
     ChimeraLatencyState *st = bs->opaque;
-    int64_t t0 = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    ChimeraSleeper sl;
+    chimera_pace_begin(&sl);
     int ret = 0;
     if (st->cow) {
         for (int64_t done = 0; done < bytes; ) {
@@ -222,7 +279,7 @@ chimera_latency_co_pwrite_zeroes(BlockDriverState *bs, int64_t offset,
     } else {
         ret = bdrv_co_pwrite_zeroes(bs->file, offset, bytes, flags);
     }
-    chimera_latency_pace(t0);
+    chimera_pace_end(&sl);
     return ret;
 }
 
@@ -230,12 +287,13 @@ static int coroutine_fn GRAPH_RDLOCK
 chimera_latency_co_pdiscard(BlockDriverState *bs, int64_t offset, int64_t bytes)
 {
     ChimeraLatencyState *st = bs->opaque;
-    int64_t t0 = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    ChimeraSleeper sl;
+    chimera_pace_begin(&sl);
     int ret = 0;
     if (!st->cow) {
         ret = bdrv_co_pdiscard(bs->file, offset, bytes);
     }
-    chimera_latency_pace(t0);
+    chimera_pace_end(&sl);
     return ret;
 }
 
@@ -243,12 +301,13 @@ static int coroutine_fn GRAPH_RDLOCK
 chimera_latency_co_flush(BlockDriverState *bs)
 {
     ChimeraLatencyState *st = bs->opaque;
-    int64_t t0 = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    ChimeraSleeper sl;
+    chimera_pace_begin(&sl);
     int ret = 0;
     if (!st->cow) {
         ret = bdrv_co_flush(bs->file->bs);
     }
-    chimera_latency_pace(t0);
+    chimera_pace_end(&sl);
     return ret;
 }
 

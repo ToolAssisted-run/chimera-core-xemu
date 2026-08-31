@@ -92,6 +92,44 @@ The sandbox leg took, beyond the native work below:
   main() returns 0, work happens in exports; the state stash is copied out
   before qemu_fclose (the buffer channel frees its bytes on close).
 
+## M2 status: the real boot - kernel up, game loading, gates green
+
+At authentic speed (shift=0) the machine truly boots: MCPX bootrom, 2BL
+kernel decrypt (RC4 + SHA-1), kernel at 0x80010000, DVD mount, and Prince
+of Persia's Dare engine loading with PCRTC scanning out its framebuffer
+(black by design: null renderer until the GPU bridge). ~600 frames in under
+a minute of wall clock. `run-gate.sh 600` passes both legs, and with
+XBOX_DVD_PATH set the same two legs pass with the disc in (the state grows
+to ~16MB as the game fills RAM).
+
+What the real boot flushed out, each found as a hang or a diverging byte:
+
+9.  Warp only for a truly halted guest (patch 0008): cpu_thread_is_idle
+    counts a merely STOPPED cpu as idle, and right after vm_start there is
+    a window before the vCPU thread clears stopped. icount warped whole
+    frame budgets into bias at host-dependent instants. Now every cpu must
+    be genuinely HLTed (and without pending work) before the warp timer
+    arms.
+10. The NV2A PTIMER alarm respin (patch 0008): the alarm distance in ns can
+    floor to zero while the virtual clock is frozen during timer
+    processing, so the alarm re-arms at the same instant forever - the vCPU
+    thread spins at 100% host CPU executing nothing. A nonzero distance now
+    rounds up to at least one reg tick.
+11. vblank must be DELIVERED: with -display none there is no console loop,
+    so the driver calls graphic_hw_update(qemu_console_lookup_by_index(0))
+    once per frame (NULL means no console and silently no-ops). The kernel
+    idle loop waits on a GPU progress counter that only advances when the
+    vsync ISR pokes NV_PGRAPH_INCREMENT.
+12. Sleepers must not outlive the stop: vm_stop drains all block requests,
+    and a filter sleeper waiting on a frozen virtual clock stalls the drain
+    for the whole host timeout. The filter's vm-change-state handler
+    releases every sleeper the moment the runstate leaves running - which
+    is exactly the delivery model of mechanism 6.
+
+Still open in M2: xid gamepad input (xemu_input_get_bound), a video export
+of the PCRTC scanout (GetVideoBgra reading xbox.ram), savestate round-trip
+on the arena.
+
 ## The native determinism story (still true, prerequisite)
 
 `waterbox/run-determinism-native.sh N` boots the real firmware (MCPX 1.0 +
@@ -104,8 +142,12 @@ What it took - each of these was found by an actual diverging byte, in
 order, and lives in patches/ + waterbox/:
 
 1. Frame boundary: one 16.667ms QEMU_CLOCK_VIRTUAL slice per frame under
-   `-icount shift=5,sleep=off -rtc base=2000-01-01,clock=vm`. icount sleep
-   MUST be off: sleep=on warps by measured host time.
+   `-icount shift=0,sleep=off -rtc base=2000-01-01,clock=vm`. icount sleep
+   MUST be off: sleep=on warps by measured host time. shift=0 (1ns per
+   instruction, a 733MHz-class machine) is not a luxury: the 2BL's SHA-1
+   over the kernel and the byte-wise decompression legitimately burn
+   billions of instructions, and at shift=5 the boot takes half an hour of
+   virtual frames.
 2. cpu_ticks_offset/cpu_clock_offset are host-clock deltas saved into the
    state; on XBOX nothing consumes them (the TSC is virtual-clock derived
    upstream), so pre_save canonicalises them (patch 0006).
@@ -120,11 +162,19 @@ order, and lives in patches/ + waterbox/:
    deadlocks: pgraph work can longjmp back to the CPU loop and leak locks,
    and pgraph_write holds pfifo.lock + pg->lock. The thread's bql_lock
    dances become conditional on bql_locked().
-6. Disk I/O completed at host time; block/chimera-latency.c (copied in, wired
-   by patch 0003) makes every request complete exactly 2ms of VIRTUAL time
-   after submission - the interrupt's position in the instruction stream
-   can no longer depend on the host's storage. Requests issued while the vm
-   is stopped (realize-time geometry probe, savevm) complete immediately.
+6. Disk I/O completed at host time; block/chimera-latency.c (copied in,
+   wired by patch 0003) makes every request complete at the NEXT FRAME
+   BOUNDARY - the vm_stop the driver performs each frame. That instant is
+   pure virtual time and, crucially, is reached identically by the native
+   build (host-preemptive threads) and the sandbox (cooperative green
+   threads), so the interrupt's position in the instruction stream cannot
+   depend on either host storage or thread scheduling. A fixed mid-frame
+   virtual deadline was tried first and worked natively, but in the sandbox
+   the vCPU green thread never syscalls mid-slice, the thread-pool BHs
+   starve to the boundary anyway, and the two sides diverge. Requests
+   issued while the vm is stopped (realize-time geometry probe, savevm, the
+   boundary itself) complete immediately. The 0..16.7ms quantized latency
+   is also about what a real drive does.
 7. The warp governor (driver): with sleep=off an idle guest's clock leaps
    to the next deadline, overtaking in-flight I/O in host-dependent ways; a
    permanently pending 10us virtual timer bounds every leap.

@@ -1,0 +1,46 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index d6471174a3..193a5d29d5 100644
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -310,6 +310,20 @@ void icount_start_warp_timer(void)
+             return;
+         }
+ 
++        /* CHIMERA: a cpu that is merely STOPPED counts as idle above - and
++         * right after vm_start there is a window where the vCPU thread has
++         * not yet cleared cpu->stopped. Warping there devours the frame's
++         * whole budget as bias instead of executed instructions, at an
++         * instant that depends on host scheduling. Only a guest that truly
++         * executed HLT (and has no pending work) may warp.
++         */
++        CPUState *warp_cpu;
++        CPU_FOREACH(warp_cpu) {
++            if (!warp_cpu->halted || cpu_has_work(warp_cpu)) {
++                return;
++            }
++        }
++
+         if (qtest_enabled()) {
+             /* When testing, qtest commands advance icount.  */
+             return;
+diff --git a/hw/xbox/nv2a/ptimer.c b/hw/xbox/nv2a/ptimer.c
+index 7dfa5341c3..9d35181bf2 100644
+--- a/hw/xbox/nv2a/ptimer.c
++++ b/hw/xbox/nv2a/ptimer.c
+@@ -121,6 +121,16 @@ static void schedule_qemu_timer(NV2AState *d)
+         uint64_t internal_diff_ticks =
+             PTIMER_REG_TO_INTERNAL_TIME(diff_reg_time);
+         diff_ns = ptimer_ticks_to_ns(d, internal_diff_ticks);
++        /* CHIMERA: under icount the virtual clock is frozen while timers
++         * run - if this conversion floors to zero the alarm re-arms at the
++         * same instant and the timer list spins forever. Round a nonzero
++         * distance up to at least one whole reg tick. */
++        if (diff_ns == 0) {
++            diff_ns = ptimer_ticks_to_ns(d, PTIMER_REG_TO_INTERNAL_TIME(1));
++            if (diff_ns == 0) {
++                diff_ns = 1;
++            }
++        }
+     }
+ 
+     timer_mod(&d->ptimer.timer,

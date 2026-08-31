@@ -22,6 +22,8 @@
 #include "system/system.h"
 #include "system/runstate.h"
 #include "system/replay.h"
+#include "system/cpus.h"
+#include "ui/console.h"
 #include "migration/qemu-file.h"
 #include "migration/savevm.h"
 #include "io/channel-file.h"
@@ -36,6 +38,7 @@
 #include "ui/xemu-net.h"
 
 #include <locale.h>
+#include <sched.h>
 
 int (*qemu_main)(void);
 
@@ -167,23 +170,40 @@ static int64_t governor_next;
 static void governor_tick(void *opaque)
 {
     (void)opaque;
+#ifdef CHIMERA_GUEST
+    /* The sandbox's threads are cooperative: the vCPU never syscalls while
+     * executing, so the main loop's BH work (disk completions) would starve
+     * until the frame boundary. This tick runs at exact virtual instants on
+     * the vCPU thread - yielding here rotates every green thread once per
+     * governor period, deterministically. */
+    sched_yield();
+#endif
     governor_next += GOVERNOR_NS;
     timer_mod_ns(governor, governor_next);
 }
 
 static bool frame_done;
+static bool debug_no_pause; /* CHIMERA_DEBUG_NOPAUSE: boot-bisect aid */
 
 static void frame_boundary(void *opaque)
 {
     (void)opaque;
     frame_done = true;
-    /* Freeze the machine exactly here. The rr thread computes the vCPU's
-     * next instruction budget under the BQL, which this callback holds - so
-     * pausing before returning means not one instruction runs past the
-     * boundary. Without this, the vCPU races toward the next deadline while
-     * the driver reacts, and the stop instant becomes host timing.
+    if (debug_no_pause) {
+        return;
+    }
+    /* Freeze execution exactly here. Under icount this callback can run on
+     * the vCPU thread itself - vm_stop() from there DEFERS the stop and the
+     * machine drifts past the boundary at host-dependent instants. So: the
+     * vCPU stops itself synchronously at this exact virtual instant, and
+     * the main thread completes the runstate change once the frame loop
+     * returns (see run_one_frame).
      */
-    vm_stop(RUN_STATE_PAUSED);
+    if (qemu_in_vcpu_thread()) {
+        cpu_stop_current();
+    } else {
+        vm_stop(RUN_STATE_PAUSED);
+    }
 }
 
 static QEMUTimer *frame_timer;
@@ -191,8 +211,12 @@ static int64_t frame_next;
 
 static void frame_machinery_init(void)
 {
+    debug_no_pause = getenv("CHIMERA_DEBUG_NOPAUSE") != NULL;
     governor = timer_new_ns(QEMU_CLOCK_VIRTUAL, governor_tick, NULL);
     governor_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (getenv("CHIMERA_DEBUG_NOGOV") != NULL) {
+        governor_next = INT64_MAX / 2; /* park it */
+    }
     governor_tick(NULL);
 
     frame_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, frame_boundary, NULL);
@@ -201,6 +225,15 @@ static void frame_machinery_init(void)
 
 static void run_one_frame(void)
 {
+    /* One vblank per frame, delivered at the boundary while the machine is
+     * still paused: nv2a's gfx_update raises NV_PCRTC_INTR_0_VBLANK, and
+     * the guest sees the interrupt the moment the next frame starts. With
+     * -display none there is no refresh timer, so this is THE vblank
+     * source - which is exactly what a frame-stepped machine wants.
+     * (Look the console up explicitly: with no display attached there is
+     * no active console for the NULL shorthand to find.) */
+    graphic_hw_update(qemu_console_lookup_by_index(0));
+
     frame_done = false;
     frame_next += VBLANK_NS;
     timer_mod_ns(frame_timer, frame_next);
@@ -209,6 +242,9 @@ static void run_one_frame(void)
     }
     while (!frame_done) {
         main_loop_wait(false);
+    }
+    if (!debug_no_pause && runstate_is_running()) {
+        vm_stop(RUN_STATE_PAUSED); /* the vCPU already stopped at the boundary */
     }
 }
 
@@ -289,7 +325,7 @@ ECL_EXPORT int Init(void)
 
     char *argv[] = {
         (char *)"core",
-        (char *)"-icount", (char *)"shift=5,sleep=off",
+        (char *)"-icount", (char *)"shift=0,sleep=off",
         (char *)"-rtc", (char *)"base=2000-01-01,clock=vm",
         NULL
     };

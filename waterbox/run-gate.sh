@@ -7,6 +7,7 @@
 # Usage: waterbox/run-gate.sh [frames]   (default 60)
 # Firmware from $XBOX_FW_DIR (default ~/xbox-roms/"Xbox BIOS"), never
 # written: the block filter's cow mode keeps all writes in memory.
+# Set XBOX_DVD_PATH to an iso to run the same legs with a disc inserted.
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
@@ -26,7 +27,7 @@ mbh="$HOME/chimera/extern/tools/chimera-common-minibox/build/meson-cpp/source/ho
 	-I "$HOME/chimera/extern/tools/chimera-common-minibox/source/host" \
 	"$mbh/libminiboxhost.so" -Wl,-rpath,"$mbh"
 
-QEMU_ARGS="-icount shift=5,sleep=off -rtc base=2000-01-01,clock=vm"
+QEMU_ARGS="-icount shift=0,sleep=off -rtc base=2000-01-01,clock=vm"
 
 # one minted EEPROM for every leg (it is per-project persistent data)
 if [ ! -f "$run/eeprom-master.bin" ]; then
@@ -65,6 +66,9 @@ flashrom_path = '$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin'
 eeprom_path = '$run/eeprom-master.bin'
 hdd_path = '$fw/Hard Disk/xbox_hdd.qcow2'
 EOF
+if [ -n "${XBOX_DVD_PATH:-}" ]; then
+	printf "dvd_path = '%s'\n" "$XBOX_DVD_PATH" >> "$run/xemu.toml"
+fi
 
 fail=0
 
@@ -85,6 +89,7 @@ timeout 590 "$runwbx" "$wbx" \
 	--bios "$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
 	--eeprom "$run/eeprom-master.bin" \
 	--hdd "$fw/Hard Disk/xbox_hdd.qcow2" \
+	${XBOX_DVD_PATH:+--dvd "$XBOX_DVD_PATH"} \
 	--frames "$frames" --state-out "$run/state-wbx.bin" \
 	> "$run/leg-wbx.log" 2>&1 || { echo "sandbox leg died"; tail -3 "$run/leg-wbx.log"; fail=1; }
 if cmp -s "$run/state-nat-A.bin" "$run/state-wbx.bin"; then

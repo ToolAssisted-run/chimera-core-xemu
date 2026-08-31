@@ -19,7 +19,7 @@ mkdir -p "$run"
 [ -x "$bin" ] || { echo "native build missing: $bin" >&2; exit 1; }
 
 # fixed icount shift and a fixed RTC base: no host clock may reach the machine
-QEMU_ARGS="-icount shift=5,sleep=off -rtc base=2000-01-01,clock=vm"
+QEMU_ARGS="-icount shift=0,sleep=off -rtc base=2000-01-01,clock=vm"
 
 # The EEPROM is an identity xemu mints with real randomness (keys, MAC,
 # serial) - it is per-project persistent data, not part of the machine. Mint
