@@ -203,6 +203,65 @@ of Persia's intro FMV plays through the PVIDEO overlay (live overlay regs,
 steady 2-3MB/s DVD streaming), which neither pgraph flips nor the VGA
 scanout show. Overlay composition arrives with the GPU bridge (M4).
 
+## M4 status: the GPU bridge - a real driver draws, and the machine agrees
+
+The whole of xemu's NV2A GL renderer (pgraph/gl + glsl, GL 4.0 core) now
+compiles in every build, over glad instead of SDL + epoxy. The five-entry
+gloffscreen abstraction is rebuilt in pgraph/chimera-gl/: in the sandbox
+the glad function pointers are filled with generated bridge wrappers
+(waterbox/generated-gl, 115 of miniBox's 194-entry master list - 21 names
+appended for this core) and every call crosses to the host through the one
+callback a guest may make; the native reference brings up its own EGL
+surfaceless context, so both render through the same driver and the gate
+can compare their machines byte for byte.
+
+That comparison MEANS more here than on PCSX2 or flycast: the Xbox is UMA,
+and rendered surfaces are downloaded back into machine RAM (the same
+glo_readpixels path upstream uses). GPU output feeds machine state by
+design. The gpu gate leg (XBOX_GPU=1) holds anyway on one host and one
+driver: native A == native B == sandbox at 600 frames, 40.7MB of state
+with the boot animation's rendered frames inside it - and the picture is
+the real one, the animated Xbox logo, out of both builds. Across machines
+or drivers a GPU-drawn run is not deterministic and must say so (the
+frontend's ce_session_deterministic story, M5).
+
+What the port took:
+- epoxy is gone: gloffscreen.h re-typed over glad; glo_check_extension via
+  glGetStringi; the renderer sources compile unmodified but for two
+  variable shadows (blit.c) that upstream's laxer warnings never saw.
+- Contexts: upstream's shared render/display context pair is real EGL
+  shared contexts natively. EGL forbids binding a context current on
+  another thread, so the driver RELEASES whatever the thread holds at
+  every frame boundary (vCPU lets go before the stop, main before the
+  start) - the BQL serializes all GL, the boundary is where work migrates.
+  glo_ensure_current() rebinds the render context in pfifo_drain and the
+  display update. In the sandbox all of this is a no-op: one host thread,
+  the host owns the context.
+- The pfifo-thread waits: every "set pending, kick, wait" in
+  gl/{renderer,surface,display}.c gets pfifo_service_pending(d) first - an
+  inline run of the renderer's process_pending with the render context
+  temporarily bound, after which the event_wait falls straight through.
+  Same disease, same cure as M1's synchronous drain.
+- nv2a_context_init was the UI's job; the driver calls it (only the CHOSEN
+  renderer gets early_context_init - the GL renderer is always compiled
+  now, and its context creation must not run in a null-rendered gate).
+- The GL shader disk cache is a desktop comfort: a sandbox has no home
+  directory. g_config.perf.cache_shaders is forced off in both builds and
+  init respects it (upstream created the folder and spawned the reload
+  thread unconditionally).
+- run-wbx grew the host half: pcsx2's gl-host.c verbatim (core-agnostic by
+  design) + the full-list generated dispatcher + glad, handed over as
+  SetGpuBridge BEFORE Init, CHIMERA_GPU=1 to ask.
+
+Still open in M4: the exported picture under GL is the VGA scanout of RAM,
+which shows what was downloaded - the PVIDEO overlay (Prince of Persia's
+FMVs) and upscaled rendering only appear through the GL display pipeline
+(pgraph_gl_get_framebuffer_surface), which GetVideoBgra does not use yet;
+savestates under an active GL renderer are untested (GL objects are
+outside the arena; the machine's own surface data is IN RAM, so reload
+should rebuild, but nothing proves it); Windows and real hardware remain
+unproven for the bridge generally.
+
 ## The native determinism story (still true, prerequisite)
 
 `waterbox/run-determinism-native.sh N` boots the real firmware (MCPX 1.0 +

@@ -31,6 +31,15 @@ cp "$here/monitor-null.c" "$xemu/hw/xbox/mcpx/apu/monitor-null.c"
 cp "$here/chimera-latency.c" "$xemu/block/chimera-latency.c"
 cp "$here/dsp-jit-null.c" "$xemu/hw/xbox/mcpx/apu/dsp/dsp-jit-null.c"
 cp "$here/det-pow.c" "$xemu/hw/xbox/mcpx/apu/det-pow.c"
+mkdir -p "$xemu/hw/xbox/nv2a/pgraph/chimera-gl"
+cp "$here"/gl-shim/gloffscreen.h "$here"/gl-shim/gl-context.c \
+   "$here"/gl-shim/gl-bridge-cshim.cpp \
+   "$here"/generated-gl/gl-bridge-guest.cpp "$here"/generated-gl/gl-bridge-ops.h \
+   "$xemu/hw/xbox/nv2a/pgraph/chimera-gl/"
+cp "$root/../chimera/extern/tools/chimera-common-minibox/source/gl/gl-bridge.h" \
+   "$xemu/hw/xbox/nv2a/pgraph/chimera-gl/" 2>/dev/null || \
+   cp "$here/gl-shim/gl-bridge.h" "$xemu/hw/xbox/nv2a/pgraph/chimera-gl/"
+cp -r "$here/glad" "$xemu/hw/xbox/nv2a/pgraph/chimera-gl/"
 mkdir -p "$xemu/hw/xbox/mcpx/apu/samplerate"
 cp "$here"/samplerate/* "$xemu/hw/xbox/mcpx/apu/samplerate/"
 echo "driver sources copied"

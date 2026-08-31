@@ -40,11 +40,35 @@
 #include "ui/xemu-snapshots.h"
 #include "ui/xemu-widescreen.h"
 #include "ui/xemu-net.h"
+#include "hw/xbox/nv2a/nv2a.h"
 
 #include <locale.h>
 #include <sched.h>
 
 int (*qemu_main)(void);
+
+/* ---- the GPU bridge (chimera-gl) ----------------------------------------
+ * Whether a real GPU draws is decided before the machine boots: the sandbox
+ * is handed the host's callback (SetGpuBridge, before Init), the native
+ * reference brings up its own EGL context when CHIMERA_GPU asks. Either way
+ * the choice only flips g_config's renderer; the null renderer remains the
+ * deterministic default. */
+bool chimera_gl_available(void);
+const char *chimera_gl_describe(void);
+#ifdef CHIMERA_GUEST
+bool chimera_gl_try_bridge(uint64_t addr);
+#endif
+
+static void chimera_choose_renderer(bool want_gpu)
+{
+    g_config.display.renderer = CONFIG_DISPLAY_RENDERER_NULL;
+    if (want_gpu && chimera_gl_available()) {
+        g_config.display.renderer = CONFIG_DISPLAY_RENDERER_OPENGL;
+    }
+    /* the shader disk cache is a desktop comfort; neither the sandbox nor
+     * the reference build wants host-disk state */
+    g_config.perf.cache_shaders = false;
+}
 
 #ifndef __GLIBC__
 /* The waterbox musl has no signals, and no sigsetjmp. Every QEMU call site
@@ -256,10 +280,15 @@ static void governor_tick(void *opaque)
 static bool frame_done;
 static bool debug_no_pause; /* CHIMERA_DEBUG_NOPAUSE: boot-bisect aid */
 
+void glo_release_current(void);
+
 static void frame_boundary(void *opaque)
 {
     (void)opaque;
     frame_done = true;
+    /* GL work migrates across the stop: whatever context this thread holds
+     * goes back so the other side may bind it (EGL forbids stealing) */
+    glo_release_current();
     if (debug_no_pause) {
         return;
     }
@@ -308,6 +337,7 @@ static void run_one_frame(void)
     frame_done = false;
     frame_next += VBLANK_NS;
     timer_mod_ns(frame_timer, frame_next);
+    glo_release_current(); /* the vCPU thread takes the render context back */
     if (!runstate_is_running()) {
         vm_start();
     }
@@ -396,6 +426,15 @@ int main(void)
     return 0; /* work happens in the exports */
 }
 
+ECL_EXPORT void SetGpuBridge(uint64_t addr)
+{
+    if (chimera_gl_try_bridge(addr)) {
+        fprintf(stderr, "chimera gl: %s\n", chimera_gl_describe());
+    } else {
+        fprintf(stderr, "chimera: the GPU bridge was offered and refused\n");
+    }
+}
+
 ECL_EXPORT const char *GetLoadError(void)
 {
     return g_loadError;
@@ -413,7 +452,7 @@ ECL_EXPORT int Init(void)
     }
 
     g_config.general.show_welcome = false;
-    g_config.display.renderer = CONFIG_DISPLAY_RENDERER_NULL;
+    chimera_choose_renderer(chimera_gl_available());
     g_config.audio.use_dsp_jit = false;
     g_config.sys.mem_limit = (int)wbx_setting_double("memLimit128", 0)
         ? CONFIG_SYS_MEM_LIMIT_128 : CONFIG_SYS_MEM_LIMIT_64;
@@ -433,6 +472,7 @@ ECL_EXPORT int Init(void)
         (char *)"-rtc", (char *)"base=2000-01-01,clock=vm",
         NULL
     };
+    nv2a_context_init(); /* the chosen renderer creates its contexts */
     qemu_init(5, argv);
     release_and_retake_locks();
     chimera_attach_gamepads();
@@ -591,6 +631,19 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    {
+        const char *want = getenv("CHIMERA_GPU");
+        bool gpu = want != NULL && strcmp(want, "0") != 0;
+        chimera_choose_renderer(gpu);
+        if (gpu && g_config.display.renderer != CONFIG_DISPLAY_RENDERER_OPENGL) {
+            fprintf(stderr, "chimera gl: no context; using the null renderer\n");
+        }
+    }
+
+    nv2a_context_init(); /* the chosen renderer creates its contexts */
+    if (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_OPENGL) {
+        fprintf(stderr, "chimera gl: %s\n", chimera_gl_describe());
+    }
     qemu_init(argc, argv);
     release_and_retake_locks();
     chimera_attach_gamepads();

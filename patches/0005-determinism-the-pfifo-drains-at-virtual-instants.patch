@@ -1,8 +1,21 @@
 diff --git a/hw/xbox/nv2a/nv2a.c b/hw/xbox/nv2a/nv2a.c
-index 1565c05211..a8ae3e843d 100644
+index 1565c05211..021ccea0e8 100644
 --- a/hw/xbox/nv2a/nv2a.c
 +++ b/hw/xbox/nv2a/nv2a.c
-@@ -242,8 +242,15 @@ static void nv2a_init_memory(NV2AState *d, MemoryRegion *ram)
+@@ -200,9 +200,12 @@ int nv2a_get_screen_off(void)
+     return g_nv2a->vga.sr[VGA_SEQ_CLOCK_MODE] & VGA_SR01_SCREEN_OFF;
+ }
+ 
++void glo_ensure_current(void);
++
+ static void nv2a_vga_gfx_update(void *opaque)
+ {
+     VGACommonState *vga = opaque;
++    glo_ensure_current();
+     vga->hw_ops->gfx_update(vga);
+ 
+     NV2AState *d = container_of(vga, NV2AState, vga);
+@@ -242,8 +245,15 @@ static void nv2a_init_memory(NV2AState *d, MemoryRegion *ram)
      pgraph_init(d);
  
      /* fire up pfifo */
@@ -18,7 +31,7 @@ index 1565c05211..a8ae3e843d 100644
  }
  
  static void nv2a_init_vga(NV2AState *d)
-@@ -272,10 +279,13 @@ static void nv2a_init_vga(NV2AState *d)
+@@ -272,10 +282,13 @@ static void nv2a_init_vga(NV2AState *d)
  static void nv2a_lock_fifo(NV2AState *d)
  {
      qemu_mutex_lock(&d->pfifo.lock);
@@ -32,7 +45,7 @@ index 1565c05211..a8ae3e843d 100644
      qemu_mutex_lock(&d->pgraph.lock);
  }
  
-@@ -296,9 +306,15 @@ static void nv2a_reset(NV2AState *d)
+@@ -296,9 +309,15 @@ static void nv2a_reset(NV2AState *d)
      qemu_event_reset(&d->pgraph.flush_complete);
      qatomic_set(&d->pgraph.flush_pending, true);
      nv2a_unlock_fifo(d);
@@ -48,7 +61,7 @@ index 1565c05211..a8ae3e843d 100644
      nv2a_lock_fifo(d);
      if (!halted) {
          qatomic_set(&d->pfifo.halt, false);
-@@ -374,7 +390,9 @@ static void nv2a_exitfn(PCIDevice *dev)
+@@ -374,7 +393,9 @@ static void nv2a_exitfn(PCIDevice *dev)
      d->exiting = true;
  
      qemu_cond_broadcast(&d->pfifo.fifo_cond);
@@ -58,7 +71,7 @@ index 1565c05211..a8ae3e843d 100644
  
      pgraph_destroy(&d->pgraph);
  }
-@@ -396,9 +414,13 @@ static void nv2a_vm_state_change(void *opaque, bool running, RunState state)
+@@ -396,9 +417,13 @@ static void nv2a_vm_state_change(void *opaque, bool running, RunState state)
          qatomic_set(&d->pfifo.halt, true);
          pgraph_pre_savevm_trigger(d);
          nv2a_unlock_fifo(d);
@@ -72,7 +85,7 @@ index 1565c05211..a8ae3e843d 100644
          nv2a_lock_fifo(d);
      } else if (state == RUN_STATE_RESTORE_VM) {
          nv2a_lock_fifo(d);
-@@ -412,9 +434,13 @@ static void nv2a_vm_state_change(void *opaque, bool running, RunState state)
+@@ -412,9 +437,13 @@ static void nv2a_vm_state_change(void *opaque, bool running, RunState state)
          nv2a_lock_fifo(d);
          pgraph_pre_shutdown_trigger(d);
          nv2a_unlock_fifo(d);
@@ -100,10 +113,10 @@ index bbc8b220dc..487864b8ca 100644
      } pfifo;
  
 diff --git a/hw/xbox/nv2a/pfifo.c b/hw/xbox/nv2a/pfifo.c
-index ff4625c258..4e3c6b0c32 100644
+index ff4625c258..3255f7a8ad 100644
 --- a/hw/xbox/nv2a/pfifo.c
 +++ b/hw/xbox/nv2a/pfifo.c
-@@ -89,11 +89,59 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
+@@ -89,11 +89,87 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
      qemu_mutex_unlock(&d->pfifo.lock);
  }
  
@@ -143,11 +156,39 @@ index ff4625c258..4e3c6b0c32 100644
 +    qemu_mutex_unlock(&d->pfifo.lock);
 +}
 +
++/* chimera-gl: the native EGL context follows the BQL-holding thread */
++void glo_ensure_current(void);
++
++/* CHIMERA: everywhere upstream says "set a pending flag, kick the pfifo
++ * thread, wait for its event" there is no pfifo thread here - the work is
++ * done inline by the caller, which the BQL already serializes. The
++ * renderer's process_pending sets the completion events, so the caller's
++ * event_wait falls straight through. GL work needs the render context on
++ * THIS thread for the duration; whatever context the caller had comes
++ * back afterwards (the display path calls this while holding the display
++ * context). */
++void *chimera_glo_current(void);
++void *chimera_glo_render(void);
++void chimera_glo_rebind(void *ctx);
++
++void pfifo_service_pending(NV2AState *d)
++{
++    void *prev = chimera_glo_current();
++    chimera_glo_rebind(chimera_glo_render());
++    qemu_mutex_lock(&d->pfifo.lock);
++    if (d->pgraph.renderer && d->pgraph.renderer->ops.process_pending) {
++        d->pgraph.renderer->ops.process_pending(d);
++    }
++    qemu_mutex_unlock(&d->pfifo.lock);
++    chimera_glo_rebind(prev);
++}
++
 +void pfifo_drain(NV2AState *d)
 +{
 +    if (d->pfifo.in_drain) {
 +        return; /* a kick from inside the drain: the loop goes round again */
 +    }
++    glo_ensure_current();
 +    d->pfifo.in_drain = true;
 +    while (d->pfifo.fifo_kick) {
 +        d->pfifo.fifo_kick = false;
@@ -163,35 +204,8 @@ index ff4625c258..4e3c6b0c32 100644
  
  static bool can_fifo_access(NV2AState *d) {
      return qatomic_read(&d->pgraph.regs_[NV_PGRAPH_FIFO]) &
-diff --git a/hw/xbox/nv2a/pgraph/gl/meson.build b/hw/xbox/nv2a/pgraph/gl/meson.build
-index c19a542adb..92c1ec691d 100644
---- a/hw/xbox/nv2a/pgraph/gl/meson.build
-+++ b/hw/xbox/nv2a/pgraph/gl/meson.build
-@@ -1,3 +1,5 @@
-+# CHIMERA: the GL renderer exists only with SDL + epoxy on board
-+if sdl.found() and opengl.found()
- specific_ss.add([sdl, gloffscreen, files(
- 	'blit.c',
- 	'debug.c',
-@@ -11,3 +13,4 @@ specific_ss.add([sdl, gloffscreen, files(
- 	'texture.c',
- 	'vertex.c',
- 	)])
-+endif
-diff --git a/hw/xbox/nv2a/pgraph/null/meson.build b/hw/xbox/nv2a/pgraph/null/meson.build
-index e2731a13d9..9606f0ed7b 100644
---- a/hw/xbox/nv2a/pgraph/null/meson.build
-+++ b/hw/xbox/nv2a/pgraph/null/meson.build
-@@ -1,3 +1,5 @@
--specific_ss.add([sdl, files(
-+# CHIMERA: the null renderer has no SDL in it and is the one renderer a
-+# headless build always has - it must not ride the SDL condition.
-+specific_ss.add(files(
- 	'renderer.c',
--	)])
-+	))
 diff --git a/hw/xbox/nv2a/pgraph/pgraph.c b/hw/xbox/nv2a/pgraph/pgraph.c
-index 9d8118fb49..fe275d80f7 100644
+index 9d8118fb49..20059640ac 100644
 --- a/hw/xbox/nv2a/pgraph/pgraph.c
 +++ b/hw/xbox/nv2a/pgraph/pgraph.c
 @@ -199,10 +199,17 @@ void pgraph_context_switch(NV2AState *d, unsigned int channel_id)
@@ -214,7 +228,31 @@ index 9d8118fb49..fe275d80f7 100644
          qemu_mutex_lock(&pg->lock);
      }
  }
-@@ -850,9 +857,15 @@ DEF_METHOD(NV097, NO_OPERATION)
+@@ -276,17 +283,12 @@ void nv2a_context_init(void)
+                 renderers[g_config.display.renderer]->name);
+     }
+ 
+-    // FIXME: We need a mechanism for renderer to initialize new GL contexts
+-    //        on the main thread at run time. For now, just let them all create
+-    //        what they need.
+-    for (int i = 0; i < ARRAY_SIZE(renderers); i++) {
+-        const PGRAPHRenderer *r = renderers[i];
+-        if (!r) {
+-            continue;
+-        }
+-        if (r->ops.early_context_init) {
+-            r->ops.early_context_init();
+-        }
++    /* CHIMERA: only the renderer that will actually run gets to create
++     * contexts - the GL renderer is compiled into every build now, and its
++     * early init would demand a GPU that a null-rendered run does not have. */
++    const PGRAPHRenderer *chosen = renderers[g_config.display.renderer];
++    if (chosen && chosen->ops.early_context_init) {
++        chosen->ops.early_context_init();
+     }
+ }
+ 
+@@ -850,9 +852,15 @@ DEF_METHOD(NV097, NO_OPERATION)
      pg->waiting_for_nop = true;
  
      qemu_mutex_unlock(&pg->lock);
@@ -233,13 +271,15 @@ index 9d8118fb49..fe275d80f7 100644
  }
  
 diff --git a/hw/xbox/nv2a/pgraph/pgraph.h b/hw/xbox/nv2a/pgraph/pgraph.h
-index b4db914a3c..9d7f95055f 100644
+index b4db914a3c..fb8272cfe6 100644
 --- a/hw/xbox/nv2a/pgraph/pgraph.h
 +++ b/hw/xbox/nv2a/pgraph/pgraph.h
-@@ -291,6 +291,12 @@ void pgraph_check_within_begin_end_block(PGRAPHState *pg);
+@@ -291,6 +291,14 @@ void pgraph_check_within_begin_end_block(PGRAPHState *pg);
  
  void *pfifo_thread(void *arg);
  void pfifo_kick(NV2AState *d);
++/* CHIMERA: inline what the pfifo thread would have done - see pfifo.c */
++void pfifo_service_pending(NV2AState *d);
 +#ifdef CONFIG_SDL
 +static inline void pfifo_drain(NV2AState *d) { (void)d; }
 +#else
@@ -249,23 +289,3 @@ index b4db914a3c..9d7f95055f 100644
  
  void pgraph_renderer_register(const PGRAPHRenderer *renderer);
  
-diff --git a/hw/xbox/nv2a/pgraph/thirdparty/meson.build b/hw/xbox/nv2a/pgraph/thirdparty/meson.build
-index fbc3751ea7..550ee26d01 100644
---- a/hw/xbox/nv2a/pgraph/thirdparty/meson.build
-+++ b/hw/xbox/nv2a/pgraph/thirdparty/meson.build
-@@ -11,8 +11,14 @@ nv2a_vsh_cpu = declare_dependency(include_directories: nv2a_vsh_cpu_subproj.incl
-                                     nv2a_vsh_cpu_subproj.target('nv2a_vsh_disassembler'),
-                                     ])
- 
-+# CHIMERA: gloffscreen serves only the GL renderer; a headless build has
-+# neither SDL nor epoxy to compile it against
-+if sdl.found() and opengl.found()
- libgloffscreen = static_library('libgloffscreen',
-                           sources: files('gloffscreen/common.c', 'gloffscreen/sdl.c'),
--                          dependencies: sdl)
-+                          dependencies: [sdl, opengl])
- gloffscreen = declare_dependency(link_with: libgloffscreen,
-                            include_directories: ['gloffscreen'])
-+else
-+gloffscreen = not_found
-+endif

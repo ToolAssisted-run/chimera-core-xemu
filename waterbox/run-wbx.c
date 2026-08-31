@@ -12,6 +12,15 @@
  */
 #include "minibox.h"
 
+#ifdef CHIMERA_GL_BRIDGE
+/* the host half of the GPU bridge (gl-host.c): a real context, and the
+ * dispatcher the guest's wrappers call into */
+int chimera_gl_host_init(char *err, int errlen);
+const char *chimera_gl_host_description(void);
+uintptr_t chimera_gl_host_dispatch(uintptr_t op, uintptr_t a, uintptr_t b,
+                                   uintptr_t c, uintptr_t d, uintptr_t e);
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,6 +150,32 @@ int main(int argc, char **argv)
     }
 
     wbx_activate_host(h, &r);
+
+    /* The GPU, when asked for. Handed over BEFORE Init - Init is where the
+     * renderer is chosen. A machine with no usable driver just draws with
+     * the null renderer, deterministically. */
+#ifdef CHIMERA_GL_BRIDGE
+    {
+        const char *want = getenv("CHIMERA_GPU");
+        if (want && strcmp(want, "0") != 0) {
+            char glerr[256] = "";
+            if (chimera_gl_host_init(glerr, sizeof glerr) != 0) {
+                fprintf(stderr, "gpu bridge: no context (%s)\n", glerr);
+            } else {
+                typedef void (*setfn_u64)(uint64_t);
+                setfn_u64 set_bridge = (setfn_u64)proc(h, "SetGpuBridge");
+                wbx_get_callback_addr(h, (mb_external_callback)chimera_gl_host_dispatch, 0, &r);
+                if (!r.data || !set_bridge) {
+                    fprintf(stderr, "gpu bridge: could not register the callback\n");
+                } else {
+                    fprintf(stderr, "gpu bridge: %s\n", chimera_gl_host_description());
+                    set_bridge((uint64_t)r.data);
+                }
+            }
+        }
+    }
+#endif
+
     intfn Init = (intfn)proc(h, "Init");
     if (Init() != 1) {
         strfn GetLoadError = (strfn)proc(h, "GetLoadError");

@@ -23,9 +23,12 @@ mkdir -p "$run"
 [ -x "$wbx" ] || { echo "guest build missing (waterbox/setup-guest.sh + ninja qemu-system-i386)" >&2; exit 1; }
 
 mbh="$HOME/chimera/extern/tools/chimera-common-minibox/build/meson-cpp/source/host"
-[ -x "$runwbx" ] || gcc -O2 -o "$runwbx" "$here/run-wbx.c" \
-	-I "$HOME/chimera/extern/tools/chimera-common-minibox/source/host" \
-	"$mbh/libminiboxhost.so" -Wl,-rpath,"$mbh"
+mb="$HOME/chimera/extern/tools/chimera-common-minibox"
+[ -x "$runwbx" ] || gcc -O2 -DCHIMERA_GL_BRIDGE -o "$runwbx" \
+	"$here/run-wbx.c" "$here/gl-host.c" "$here/glad/src/gl.c" \
+	-I "$mb/source/host" -I "$mb/source/gl" \
+	-I "$here/generated-gl-host" -I "$here/glad/include" \
+	"$mbh/libminiboxhost.so" -Wl,-rpath,"$mbh" -lEGL
 
 QEMU_ARGS="-icount shift=0,sleep=off -rtc base=2000-01-01,clock=vm"
 
@@ -157,6 +160,38 @@ if [ -n "${XBOX_DVD_PATH:-}" ] && [ "$frames" -ge 1200 ]; then
 		echo "PASS: input leg - the press reached the machine, native == sandbox"
 	else
 		echo "FAIL: native and sandbox disagree under input"; fail=1
+	fi
+fi
+
+# The GPU leg (XBOX_GPU=1): the same machine with the GL renderer drawing
+# through a real driver - EGL surfaceless in the native build, the bridge in
+# the sandbox. On the Xbox the GPU's output feeds back into RAM (UMA), so
+# machine state now CONTAINS the picture: the compare only holds on one host
+# with one driver, which is exactly what this leg pins down. Runs at 600
+# frames; the boot animation is fully rendered by then.
+if [ -n "${XBOX_GPU:-}" ]; then
+	for i in A B; do
+		XEMU_BASE_PATH="$run" CHIMERA_FRAMES=600 CHIMERA_GPU=1 \
+			CHIMERA_STATE_OUT="$run/state-gpu-nat-$i.bin" \
+			timeout 590 "$nat" -config_path "$run/xemu.toml" $QEMU_ARGS \
+			> "$run/leg-gpu-nat-$i.log" 2>&1 || { echo "gpu native leg $i died"; tail -3 "$run/leg-gpu-nat-$i.log"; fail=1; }
+	done
+	CHIMERA_GPU=1 timeout 590 "$runwbx" "$wbx" \
+		--mcpx "$fw/MCPX Boot ROM/mcpx_1.0.bin" \
+		--bios "$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
+		--eeprom "$run/eeprom-master.bin" \
+		--hdd "$fw/Hard Disk/xbox_hdd.qcow2" \
+		${XBOX_DVD_PATH:+--dvd "$XBOX_DVD_PATH"} \
+		--frames 600 --state-out "$run/state-gpu-wbx.bin" \
+		> "$run/leg-gpu-wbx.log" 2>&1 || { echo "gpu sandbox leg died"; tail -3 "$run/leg-gpu-wbx.log"; fail=1; }
+	if ! cmp -s "$run/state-gpu-nat-A.bin" "$run/state-gpu-nat-B.bin"; then
+		echo "FAIL: gpu leg - native runs differ"; fail=1
+	elif ! cmp -s "$run/state-gpu-nat-A.bin" "$run/state-gpu-wbx.bin"; then
+		echo "FAIL: gpu leg - native and sandbox differ"; fail=1
+	elif cmp -s "$run/state-gpu-nat-A.bin" "$run/state-nat-A.bin"; then
+		echo "FAIL: gpu leg - the GPU left no trace (did it draw at all?)"; fail=1
+	else
+		echo "PASS: gpu leg - the GPU drew, native == sandbox on this driver"
 	fi
 fi
 

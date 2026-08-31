@@ -79,20 +79,19 @@ index 8cf1ea0bb7..05812b79c5 100644
  subdir('nv2a')
  subdir('mcpx')
 diff --git a/hw/xbox/nv2a/pgraph/gl/meson.build b/hw/xbox/nv2a/pgraph/gl/meson.build
-index c19a542adb..92c1ec691d 100644
+index c19a542adb..17cf921ee7 100644
 --- a/hw/xbox/nv2a/pgraph/gl/meson.build
 +++ b/hw/xbox/nv2a/pgraph/gl/meson.build
-@@ -1,3 +1,5 @@
-+# CHIMERA: the GL renderer exists only with SDL + epoxy on board
-+if sdl.found() and opengl.found()
- specific_ss.add([sdl, gloffscreen, files(
+@@ -1,4 +1,8 @@
+-specific_ss.add([sdl, gloffscreen, files(
++# CHIMERA: the GL renderer compiles in every build, over glad through the
++# chimera-gl gloffscreen (bridge in the sandbox, EGL in the native
++# reference). Whether it RUNS is a runtime choice; the null renderer stays
++# the default.
++specific_ss.add([gloffscreen, files(
  	'blit.c',
  	'debug.c',
-@@ -11,3 +13,4 @@ specific_ss.add([sdl, gloffscreen, files(
- 	'texture.c',
- 	'vertex.c',
- 	)])
-+endif
+ 	'display.c',
 diff --git a/hw/xbox/nv2a/pgraph/null/meson.build b/hw/xbox/nv2a/pgraph/null/meson.build
 index e2731a13d9..9606f0ed7b 100644
 --- a/hw/xbox/nv2a/pgraph/null/meson.build
@@ -106,25 +105,40 @@ index e2731a13d9..9606f0ed7b 100644
 -	)])
 +	))
 diff --git a/hw/xbox/nv2a/pgraph/thirdparty/meson.build b/hw/xbox/nv2a/pgraph/thirdparty/meson.build
-index fbc3751ea7..550ee26d01 100644
+index fbc3751ea7..53bf17280a 100644
 --- a/hw/xbox/nv2a/pgraph/thirdparty/meson.build
 +++ b/hw/xbox/nv2a/pgraph/thirdparty/meson.build
-@@ -11,8 +11,14 @@ nv2a_vsh_cpu = declare_dependency(include_directories: nv2a_vsh_cpu_subproj.incl
+@@ -11,8 +11,27 @@ nv2a_vsh_cpu = declare_dependency(include_directories: nv2a_vsh_cpu_subproj.incl
                                      nv2a_vsh_cpu_subproj.target('nv2a_vsh_disassembler'),
                                      ])
  
-+# CHIMERA: gloffscreen serves only the GL renderer; a headless build has
-+# neither SDL nor epoxy to compile it against
-+if sdl.found() and opengl.found()
- libgloffscreen = static_library('libgloffscreen',
-                           sources: files('gloffscreen/common.c', 'gloffscreen/sdl.c'),
--                          dependencies: sdl)
-+                          dependencies: [sdl, opengl])
- gloffscreen = declare_dependency(link_with: libgloffscreen,
-                            include_directories: ['gloffscreen'])
++# CHIMERA: gloffscreen rebuilt over glad (../chimera-gl) so the GL renderer
++# exists in every build - no SDL, no epoxy. In the sandbox (a cross build)
++# the glad pointers are filled with generated bridge wrappers and every call
++# crosses to the host; the native reference brings up its own EGL
++# surfaceless context so both render through the same driver.
++chimera_gl_dir = meson.current_source_dir() / '../chimera-gl'
++chimera_gl_sources = files(
++	'../chimera-gl/gl-context.c',
++	'../chimera-gl/glad/src/gl.c',
++	)
++chimera_gl_deps = []
++if meson.is_cross_build()
++	chimera_gl_sources += files('../chimera-gl/gl-bridge-guest.cpp',
++		'../chimera-gl/gl-bridge-cshim.cpp')
 +else
-+gloffscreen = not_found
++	chimera_gl_deps += [cc.find_library('EGL', required: true)]
 +endif
+ libgloffscreen = static_library('libgloffscreen',
+-                          sources: files('gloffscreen/common.c', 'gloffscreen/sdl.c'),
+-                          dependencies: sdl)
++	sources: chimera_gl_sources,
++	include_directories: ['../chimera-gl', '../chimera-gl/glad/include'],
++	dependencies: chimera_gl_deps)
+ gloffscreen = declare_dependency(link_with: libgloffscreen,
+-                           include_directories: ['gloffscreen'])
++	include_directories: ['../chimera-gl', '../chimera-gl/glad/include'],
++	dependencies: chimera_gl_deps)
 diff --git a/meson.build b/meson.build
 index 82e5f5af65..9c40dd3294 100644
 --- a/meson.build

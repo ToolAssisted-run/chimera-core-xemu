@@ -1,0 +1,144 @@
+diff --git a/hw/xbox/nv2a/pgraph/gl/blit.c b/hw/xbox/nv2a/pgraph/gl/blit.c
+index 1fa1aa9a15..aedbc07ca7 100644
+--- a/hw/xbox/nv2a/pgraph/gl/blit.c
++++ b/hw/xbox/nv2a/pgraph/gl/blit.c
+@@ -177,10 +177,10 @@ void pgraph_gl_image_blit(NV2AState *d)
+     if (leftover_bytes > 0) {
+         uint8_t *src =
+             source_row + adjusted_height * context_surfaces->source_pitch;
+-        uint8_t *dest =
++        uint8_t *dst_tail =
+             dest_row + adjusted_height * context_surfaces->dest_pitch;
+ 
+-        perform_blit(image_blit->operation, src, dest,
++        perform_blit(image_blit->operation, src, dst_tail,
+                      leftover_bytes / bytes_per_pixel, 1, leftover_bytes,
+                      context_surfaces->source_pitch,
+                      context_surfaces->dest_pitch, beta);
+@@ -209,9 +209,9 @@ void pgraph_gl_image_blit(NV2AState *d)
+         }
+ 
+         if (leftover_bytes > 0) {
+-            uint8_t *dest =
++            uint8_t *dst_tail =
+                 dest_row + adjusted_height * context_surfaces->dest_pitch;
+-            patch_alpha(dest, leftover_bytes / 4, 1, 0, alpha_override);
++            patch_alpha(dst_tail, leftover_bytes / 4, 1, 0, alpha_override);
+         }
+     }
+ 
+diff --git a/hw/xbox/nv2a/pgraph/gl/display.c b/hw/xbox/nv2a/pgraph/gl/display.c
+index fafcd72061..552e702361 100644
+--- a/hw/xbox/nv2a/pgraph/gl/display.c
++++ b/hw/xbox/nv2a/pgraph/gl/display.c
+@@ -434,6 +434,7 @@ int pgraph_gl_get_framebuffer_surface(NV2AState *d)
+     qatomic_set(&pg->sync_pending, true);
+     pfifo_kick(d);
+     qemu_mutex_unlock(&d->pfifo.lock);
++    pfifo_service_pending(d);
+     qemu_event_wait(&d->pgraph.sync_complete);
+ 
+     return r->gl_display_buffer;
+diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.c b/hw/xbox/nv2a/pgraph/gl/renderer.c
+index e9e2109779..6116f477dd 100644
+--- a/hw/xbox/nv2a/pgraph/gl/renderer.c
++++ b/hw/xbox/nv2a/pgraph/gl/renderer.c
+@@ -162,6 +162,7 @@ static void pgraph_gl_pre_savevm_wait(NV2AState *d)
+     PGRAPHState *pg = &d->pgraph;
+     PGRAPHGLState *r = pg->gl_renderer_state;
+ 
++    pfifo_service_pending(d);
+     qemu_event_wait(&r->dirty_surfaces_download_complete);
+ }
+ 
+@@ -179,6 +180,7 @@ static void pgraph_gl_pre_shutdown_wait(NV2AState *d)
+     PGRAPHState *pg = &d->pgraph;
+     PGRAPHGLState *r = pg->gl_renderer_state;
+ 
++    pfifo_service_pending(d);
+     qemu_event_wait(&r->shader_cache_writeback_complete);
+ }
+ 
+diff --git a/hw/xbox/nv2a/pgraph/gl/shaders.c b/hw/xbox/nv2a/pgraph/gl/shaders.c
+index 2626cd5930..29667109bc 100644
+--- a/hw/xbox/nv2a/pgraph/gl/shaders.c
++++ b/hw/xbox/nv2a/pgraph/gl/shaders.c
+@@ -561,7 +561,11 @@ void pgraph_gl_init_shaders(PGRAPHState *pg)
+         shader_gl_version = (const char *) glGetString(GL_VERSION);
+     }
+ 
+-    shader_create_cache_folder();
++    /* CHIMERA: the disk cache is a desktop comfort - a sandbox has no home
++     * directory, and the reference build wants no host-disk state either */
++    if (g_config.perf.cache_shaders) {
++        shader_create_cache_folder();
++    }
+ 
+     /* FIXME: Make this configurable */
+     const size_t shader_cache_size = 50*1024;
+@@ -576,8 +580,12 @@ void pgraph_gl_init_shaders(PGRAPHState *pg)
+     r->shader_cache.compare_nodes = shader_cache_entry_compare;
+     r->shader_cache.post_node_evict = shader_cache_entry_post_evict;
+ 
+-    qemu_thread_create(&r->shader_disk_thread, "pgraph.renderer_state->shader_cache",
+-                       shader_reload_lru_from_disk, pg, QEMU_THREAD_JOINABLE);
++    if (g_config.perf.cache_shaders) {
++        qemu_thread_create(&r->shader_disk_thread,
++                           "pgraph.renderer_state->shader_cache",
++                           shader_reload_lru_from_disk, pg,
++                           QEMU_THREAD_JOINABLE);
++    }
+ 
+     /* FIXME: Make this configurable */
+     const size_t shader_module_cache_size = 50*1024;
+diff --git a/hw/xbox/nv2a/pgraph/gl/surface.c b/hw/xbox/nv2a/pgraph/gl/surface.c
+index 714121e6bd..391a459ea3 100644
+--- a/hw/xbox/nv2a/pgraph/gl/surface.c
++++ b/hw/xbox/nv2a/pgraph/gl/surface.c
+@@ -50,6 +50,7 @@ void pgraph_gl_set_surface_scale_factor(NV2AState *d, unsigned int scale)
+     qemu_mutex_lock(&d->pfifo.lock);
+     pfifo_kick(d);
+     qemu_mutex_unlock(&d->pfifo.lock);
++    pfifo_service_pending(d);
+     qemu_event_wait(&r->dirty_surfaces_download_complete);
+ 
+     qemu_mutex_lock(&d->pgraph.lock);
+@@ -59,6 +60,7 @@ void pgraph_gl_set_surface_scale_factor(NV2AState *d, unsigned int scale)
+     qemu_mutex_lock(&d->pfifo.lock);
+     pfifo_kick(d);
+     qemu_mutex_unlock(&d->pfifo.lock);
++    pfifo_service_pending(d);
+     qemu_event_wait(&d->pgraph.flush_complete);
+ 
+     qemu_mutex_lock(&d->pfifo.lock);
+@@ -462,6 +464,7 @@ static void surface_access_callback(void *opaque, MemoryRegion *mr, hwaddr addr,
+         qatomic_set(&r->downloads_pending, true);
+         pfifo_kick(d);
+         qemu_mutex_unlock(&d->pfifo.lock);
++        pfifo_service_pending(d);
+         qemu_event_wait(&r->downloads_complete);
+     }
+ }
+@@ -1268,6 +1271,22 @@ static void update_surface_part(NV2AState *d, bool upload, bool color)
+ 
+         glFramebufferTexture2D(GL_FRAMEBUFFER, entry.fmt.gl_attachment,
+                                GL_TEXTURE_2D, found->gl_buffer, 0);
++        { /* TEMP */
++            GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
++            if (st != GL_FRAMEBUFFER_COMPLETE) {
++                GLint fbo = -1, db = -1;
++                glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fbo);
++                glGetIntegerv(GL_DRAW_BUFFER0, &db);
++                fprintf(stderr, "[fbo] status=%04x err=%04x color=%d "
++                        "ifmt=%04x fmt=%04x type=%04x att=%04x w=%u h=%u "
++                        "fbo=%d draw0=%04x buf=%u\n",
++                        st, glGetError(), color,
++                        entry.fmt.gl_internal_format, entry.fmt.gl_format,
++                        entry.fmt.gl_type, entry.fmt.gl_attachment,
++                        entry.width, entry.height, fbo, db,
++                        found->gl_buffer);
++            }
++        }
+         assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) ==
+                GL_FRAMEBUFFER_COMPLETE);
+ 
