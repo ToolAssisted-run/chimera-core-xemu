@@ -103,6 +103,9 @@ ControllerStateList available_controllers =
 
 static ControllerState chimera_pads[CHIMERA_PORTS];
 static bool chimera_pads_attached;
+/* which ports have a Duke plugged in (settings port1..port4); an empty port
+ * has no hub and no pad, exactly an unplugged controller */
+static bool chimera_port_present[CHIMERA_PORTS] = { true, false, false, false };
 
 int xemu_input_get_test_mode(void)
 {
@@ -111,7 +114,8 @@ int xemu_input_get_test_mode(void)
 
 ControllerState *xemu_input_get_bound(int index)
 {
-    if (!chimera_pads_attached || index < 0 || index >= CHIMERA_PORTS) {
+    if (!chimera_pads_attached || index < 0 || index >= CHIMERA_PORTS ||
+        !chimera_port_present[index]) {
         return NULL;
     }
     return &chimera_pads[index];
@@ -141,6 +145,10 @@ static void chimera_attach_gamepads(void)
 
     for (int i = 0; i < CHIMERA_PORTS; i++) {
         char *tmp;
+
+        if (!chimera_port_present[i]) {
+            continue; /* an empty port: no hub, no pad, nothing to enumerate */
+        }
 
         QDict *hub_qdict = qdict_new();
         qdict_put_str(hub_qdict, "driver", "usb-hub");
@@ -477,6 +485,13 @@ ECL_EXPORT int Init(void)
     g_config.audio.use_dsp_jit = false;
     g_config.sys.mem_limit = (int)wbx_setting_double("memLimit128", 0)
         ? CONFIG_SYS_MEM_LIMIT_128 : CONFIG_SYS_MEM_LIMIT_64;
+    for (int i = 0; i < CHIMERA_PORTS; i++) {
+        char key[8], val[16];
+        snprintf(key, sizeof key, "port%d", i + 1);
+        snprintf(val, sizeof val, "%s", i == 0 ? "duke" : "none");
+        wbx_setting_str(key, val, sizeof val);
+        chimera_port_present[i] = strcmp(val, "duke") == 0;
+    }
     xemu_settings_set_string(&g_config.sys.files.bootrom_path, "mcpx");
     xemu_settings_set_string(&g_config.sys.files.flashrom_path, "bios");
     xemu_settings_set_string(&g_config.sys.files.eeprom_path, "eeprom");
@@ -513,6 +528,21 @@ ECL_EXPORT int Init(void)
  * order), SetButton/SetAxis cover anything else - the analog sticks and
  * triggers have no place in a packed word at all. */
 static uint16_t g_setButtons[CHIMERA_PORTS];
+
+/* Which of the declared controls this machine has: a control belongs to a
+ * port, and a port without a Duke has none of them. Asked once at boot; the
+ * answer holds for the machine's whole life. */
+ECL_EXPORT int IsButtonActive(int index)
+{
+    int port = index / CHIMERA_BUTTONS;
+    return index >= 0 && port < CHIMERA_PORTS && chimera_port_present[port];
+}
+
+ECL_EXPORT int IsAxisActive(int index)
+{
+    int port = index / 6; /* six axes per Duke, declaration order */
+    return index >= 0 && port < CHIMERA_PORTS && chimera_port_present[port];
+}
 
 ECL_EXPORT void SetButton(int index, int value)
 {
