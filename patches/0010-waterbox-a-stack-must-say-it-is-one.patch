@@ -1,0 +1,21 @@
+diff --git a/util/oslib-posix.c b/util/oslib-posix.c
+index 3c14b72665..b3fe2422f7 100644
+--- a/util/oslib-posix.c
++++ b/util/oslib-posix.c
+@@ -726,6 +726,16 @@ void *qemu_alloc_stack(size_t *sz)
+     *sz += pagesz;
+ 
+     flags = MAP_PRIVATE | MAP_ANONYMOUS;
++#ifdef CHIMERA_GUEST
++    /* CHIMERA: tell the sandbox this mapping is a STACK. The host's dirty
++     * tracking maps clean writable pages read-only until their first write;
++     * a stack cannot live like that on Windows, where the kernel pushes the
++     * exception dispatch frame onto the CURRENT stack - a fault with rsp in
++     * a read-only page kills the process before any handler sees it. The
++     * sandbox turns MAP_STACK into its guard-page stack protection, the
++     * same treatment pthread stacks get at clone. */
++    flags |= MAP_STACK;
++#endif
+ #if defined(MAP_STACK) && defined(__OpenBSD__)
+     /* Only enable MAP_STACK on OpenBSD. Other OS's such as
+      * Linux/FreeBSD/NetBSD have a flag with the same name
