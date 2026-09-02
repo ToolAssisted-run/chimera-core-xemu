@@ -255,7 +255,13 @@ extern int chimera_audio_count;
 
 /* ---- the frame loop ------------------------------------------------------ */
 
-#define VBLANK_NS 16666667 /* NTSC field; PAL arrives with the vsync work */
+/* NTSC field rate, 60000/1001 Hz - what a real Xbox's video hardware scans
+ * out at. One frame is 1001/60000 s = 16,683,333 1/3 ns, NOT a whole number
+ * of nanoseconds, so the boundary walks an exact absolute schedule (every
+ * third deadline lands on a whole 50,050,000 ns) instead of accumulating a
+ * rounded quantum that would drift off the true rate. PAL arrives with the
+ * vsync work. */
+#define VBLANK_3FRAMES_NS 50050000LL
 
 /* The warp governor. With icount sleep=off, an idle guest's virtual clock
  * leaps to the next timer deadline instantly - which can overtake a disk
@@ -319,6 +325,8 @@ static void frame_boundary(void *opaque)
 
 static QEMUTimer *frame_timer;
 static int64_t frame_next;
+static int64_t frame_base;  /* virtual time the frame schedule starts from */
+static int64_t frame_index; /* frames since frame_base */
 
 static void frame_machinery_init(void)
 {
@@ -331,7 +339,9 @@ static void frame_machinery_init(void)
     governor_tick(NULL);
 
     frame_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, frame_boundary, NULL);
-    frame_next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    frame_base = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    frame_index = 0;
+    frame_next = frame_base;
 }
 
 static void run_one_frame(void)
@@ -346,7 +356,8 @@ static void run_one_frame(void)
     graphic_hw_update(qemu_console_lookup_by_index(0));
 
     frame_done = false;
-    frame_next += VBLANK_NS;
+    frame_index++;
+    frame_next = frame_base + (frame_index * VBLANK_3FRAMES_NS) / 3;
     timer_mod_ns(frame_timer, frame_next);
     glo_release_current(); /* the vCPU thread takes the render context back */
     if (!runstate_is_running()) {
