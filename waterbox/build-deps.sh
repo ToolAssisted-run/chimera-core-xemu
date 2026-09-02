@@ -42,11 +42,27 @@ cflags="$(sed -n "s/^c_args = \[\(.*\)\]$/\1/p" "$cross" | sed "s/', '/ /g; s/'/
 # ---- zlib ------------------------------------------------------------------
 if [ ! -f "$deps/lib/libz.a" ]; then
 	rm -rf "$src/$ZLIB" && tar -C "$src" -xzf "$src/$ZLIB.tar.gz"
-	( cd "$src/$ZLIB" && CC=gcc CFLAGS="$cflags" ./configure --static --prefix="$deps" >/dev/null \
+	( cd "$src/$ZLIB" && CC="$root/build/guest-cc" CFLAGS="$cflags" ./configure --static --prefix="$deps" >/dev/null \
 		&& make -j"$(nproc)" libz.a >/dev/null && make install >/dev/null )
 	echo "zlib: installed"
 else
 	echo "zlib: present"
+fi
+
+# ---- a meson glib accepts ----------------------------------------------------
+# glib 2.84 wants meson >= 1.4.0, and Ubuntu 24.04 - the CI runners included -
+# ships 1.3.2. Rather than hold glib back to whatever the distro's meson takes,
+# a private venv with a new enough meson serves this script (QEMU's own
+# configure makes itself a venv the same way); the system meson is untouched.
+meson_new_enough() { meson --version 2>/dev/null | awk -F. '{ exit !($1 > 1 || ($1 == 1 && $2 >= 4)) }'; }
+if ! meson_new_enough; then
+	venv="$root/build/meson-venv"
+	if [ ! -x "$venv/bin/meson" ]; then
+		python3 -m venv "$venv"
+		"$venv/bin/pip" install -q 'meson>=1.4'
+	fi
+	PATH="$venv/bin:$PATH"; export PATH
+	echo "meson: $(meson --version) from $venv (the system's is too old for glib)"
 fi
 
 # ---- glib ------------------------------------------------------------------
