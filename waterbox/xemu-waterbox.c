@@ -344,6 +344,23 @@ static void frame_machinery_init(void)
     frame_next = frame_base;
 }
 
+/* CHIMERA_FRAME_PROFILE=1 splits the MAIN thread's share of a frame. The vCPU
+ * runs in its own thread, so wall clock here measures the frame machinery
+ * rather than the emulated processor: graphic_hw_update is nv2a's scanout and
+ * the vblank it raises, and the pump is main_loop_wait servicing timers and
+ * the APU. Native only - the sandbox freezes the host clock. */
+#ifndef CHIMERA_GUEST
+static int frame_profile = -1;
+static double prof_gfx, prof_pump;
+static long prof_frames;
+static double prof_now(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+#endif
+
 static void run_one_frame(void)
 {
     /* One vblank per frame, delivered at the boundary while the machine is
@@ -353,7 +370,16 @@ static void run_one_frame(void)
      * source - which is exactly what a frame-stepped machine wants.
      * (Look the console up explicitly: with no display attached there is
      * no active console for the NULL shorthand to find.) */
+#ifndef CHIMERA_GUEST
+    if (frame_profile < 0)
+        frame_profile = getenv("CHIMERA_FRAME_PROFILE") != NULL;
+    const double t0 = frame_profile ? prof_now() : 0;
+#endif
     graphic_hw_update(qemu_console_lookup_by_index(0));
+#ifndef CHIMERA_GUEST
+    if (frame_profile)
+        prof_gfx += prof_now() - t0;
+#endif
 
     frame_done = false;
     frame_index++;
@@ -363,9 +389,21 @@ static void run_one_frame(void)
     if (!runstate_is_running()) {
         vm_start();
     }
+#ifndef CHIMERA_GUEST
+    const double t1 = frame_profile ? prof_now() : 0;
+#endif
     while (!frame_done) {
         main_loop_wait(false);
     }
+#ifndef CHIMERA_GUEST
+    if (frame_profile) {
+        prof_pump += prof_now() - t1;
+        if (++prof_frames % 100 == 0)
+            fprintf(stderr, "[frame] %ld frames: gfx %.1f ms/f, pump %.1f ms/f\n",
+                    prof_frames, prof_gfx * 1000.0 / prof_frames,
+                    prof_pump * 1000.0 / prof_frames);
+    }
+#endif
     if (!debug_no_pause && runstate_is_running()) {
         vm_stop(RUN_STATE_PAUSED); /* the vCPU already stopped at the boundary */
     }
