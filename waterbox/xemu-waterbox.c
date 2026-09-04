@@ -519,9 +519,46 @@ ECL_EXPORT int Init(void)
         }
     }
 
+    /* How fast the Xbox's processor is, as the `cpuSpeed` setting.
+     *
+     * icount is what makes a frame a fixed quantum of EMULATION rather than of
+     * host time: the sandbox freezes the host clock, so the virtual clock has
+     * no other source and the frame timer would never fire without it. Its
+     * shift says how many nanoseconds of virtual time one instruction costs,
+     * as a power of two - so it IS the modelled instruction rate, and it
+     * decides how much work a frame contains.
+     *
+     * The Xbox's CPU is a 733 MHz Pentium III. shift=0 spends 1 ns per
+     * instruction, i.e. 1000 MIPS, which that chip would need an IPC above
+     * 1.36 to reach and does not; at a realistic IPC it retires something like
+     * 440-590 million. So 500 is the closer model as well as the cheaper one,
+     * and is the default. Measured cost of a steady-state frame on Prince of
+     * Persia (frames 60-120, boot excluded): 1000 -> 88.7 ms, 500 -> 52.2 ms,
+     * 250 -> 25.5 ms, 125 -> 18.7 ms, against a 16.7 ms budget.
+     *
+     * Neither value is exactly a 733 MHz Pentium III: the shift is a power of
+     * two, so 1000 and 500 are the choices and the question is only which is
+     * less wrong. CHIMERA_ICOUNT_SHIFT overrides it for measurement. */
+    static const char *const cpu_speeds[] = { "500", "1000", "250", "125" };
+    static const char *const cpu_shifts[] = { "1",   "0",    "2",   "3"   };
+    char speed[16];
+    strncpy(speed, cpu_speeds[0], sizeof(speed) - 1);
+    speed[sizeof(speed) - 1] = '\0';
+    wbx_setting_str("cpuSpeed", speed, sizeof(speed));
+    const char *shift = cpu_shifts[0];
+    for (size_t i = 0; i < sizeof(cpu_speeds) / sizeof(cpu_speeds[0]); i++)
+        if (strcmp(speed, cpu_speeds[i]) == 0)
+            shift = cpu_shifts[i];
+    const char *override = getenv("CHIMERA_ICOUNT_SHIFT");
+    if (override != NULL && *override != '\0')
+        shift = override;
+
+    static char icount_opt[64];
+    snprintf(icount_opt, sizeof(icount_opt), "shift=%s,sleep=off", shift);
+
     char *argv[] = {
         (char *)"core",
-        (char *)"-icount", (char *)"shift=0,sleep=off",
+        (char *)"-icount", icount_opt,
         (char *)"-rtc", (char *)"base=2000-01-01,clock=vm",
         NULL
     };
@@ -771,7 +808,39 @@ int main(int argc, char **argv)
     if (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_OPENGL) {
         fprintf(stderr, "chimera gl: %s\n", chimera_gl_describe());
     }
-    qemu_init(argc, argv);
+
+    /* The guest build gets -icount from the cpuSpeed setting (see Init); this
+     * one is a plain qemu and takes its command line, so unless a caller says
+     * otherwise it gets the SAME default. Two reasons that matters: the gate
+     * compares this binary against the sandboxed core and they have to be the
+     * same machine, and without any -icount at all the frame timer never fires
+     * and this binary hangs forever rather than failing - which is a trap worth
+     * closing, because it looks exactly like a slow emulator. */
+    int have_icount = 0;
+    for (int i = 1; i < argc; i++)
+        if (argv[i] != NULL && strcmp(argv[i], "-icount") == 0)
+            have_icount = 1;
+    char *injected[2];
+    int qargc = argc;
+    char **qargv = argv;
+    static char icount_opt[64];
+    if (!have_icount) {
+        const char *shift = getenv("CHIMERA_ICOUNT_SHIFT");
+        snprintf(icount_opt, sizeof(icount_opt), "shift=%s,sleep=off",
+                 (shift != NULL && *shift != '\0') ? shift : "1");
+        static char *newargv[64];
+        int n = 0;
+        for (int i = 0; i < argc && n < 60; i++)
+            newargv[n++] = argv[i];
+        injected[0] = (char *)"-icount";
+        injected[1] = icount_opt;
+        newargv[n++] = injected[0];
+        newargv[n++] = injected[1];
+        newargv[n] = NULL;
+        qargc = n;
+        qargv = newargv;
+    }
+    qemu_init(qargc, qargv);
     release_and_retake_locks();
     chimera_attach_gamepads();
 

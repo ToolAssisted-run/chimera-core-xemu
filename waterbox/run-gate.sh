@@ -30,7 +30,12 @@ mb="$HOME/chimera/extern/tools/chimera-common-minibox"
 	-I "$here/generated-gl-host" -I "$here/glad/include" \
 	"$mbh/libminiboxhost.so" -Wl,-rpath,"$mbh" -lEGL
 
-QEMU_ARGS="-icount shift=0,sleep=off -rtc base=2000-01-01,clock=vm"
+# No -icount here on purpose: both flavors now default to the cpuSpeed setting's
+# value (500 MIPS, shift=1), the guest through Init and the native reference by
+# injecting the same default when its command line does not say otherwise. The
+# gate exists to compare them, so it must not hand one of them a different
+# machine. Set CHIMERA_ICOUNT_SHIFT to move both at once.
+QEMU_ARGS="-rtc base=2000-01-01,clock=vm"
 
 # one minted EEPROM for every leg (it is per-project persistent data)
 if [ ! -f "$run/eeprom-master.bin" ]; then
