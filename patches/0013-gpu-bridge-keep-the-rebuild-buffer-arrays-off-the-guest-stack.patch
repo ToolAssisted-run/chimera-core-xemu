@@ -1,0 +1,56 @@
+gpu-bridge: keep the rebuild's buffer-name arrays off the guest stack
+
+pgraph_gl_init_buffers and pgraph_gl_finalize_buffers each hold the element
+cache's GL names in a stack array of element_cache_size (50K) GLuints - 200KB
+apiece. That is harmless on xemu's own threads, but the cross-session rebuild
+(pgraph_gl_check_context) runs finalize then init back to back, and it now fires
+from deep inside the synchronous pfifo drain (clear_surface / image_blit ->
+pgraph_gl_surface_update, patch 0012). Two 200KB frames that deep overrun the
+sandbox's guest stack: the tripguard reports a write fault inside the registered
+stack block, in pgraph_gl_finalize_buffers. Put the arrays on the heap; they are
+transient GL-name scratch, so a g_malloc_n/g_free pair changes nothing else.
+
+diff --git a/hw/xbox/nv2a/pgraph/gl/vertex.c b/hw/xbox/nv2a/pgraph/gl/vertex.c
+index f6ccff4e92..75b3406be8 100644
+--- a/hw/xbox/nv2a/pgraph/gl/vertex.c
++++ b/hw/xbox/nv2a/pgraph/gl/vertex.c
+@@ -255,12 +255,20 @@ void pgraph_gl_init_buffers(NV2AState *d)
+     lru_init(&r->element_cache);
+     r->element_cache_entries = g_malloc_n(element_cache_size, sizeof(VertexLruNode));
+     assert(r->element_cache_entries != NULL);
+-    GLuint element_cache_buffers[element_cache_size];
++    /* CHIMERA: element_cache_size is 50K, so this array of GL names is 200KB.
++     * On the stack that is fine on xemu's own threads, but the cross-session
++     * rebuild (pgraph_gl_check_context) runs finalize+init back to back from
++     * deep inside the synchronous pfifo drain - clear_surface / image_blit ->
++     * surface_update - and two 200KB frames there overrun the sandbox's guest
++     * stack (the tripguard catches the write). Put it on the heap. */
++    GLuint *element_cache_buffers =
++        g_malloc_n(element_cache_size, sizeof(GLuint));
+     glGenBuffers(element_cache_size, element_cache_buffers);
+     for (int i = 0; i < element_cache_size; i++) {
+         r->element_cache_entries[i].gl_buffer = element_cache_buffers[i];
+         lru_add_free(&r->element_cache, &r->element_cache_entries[i].node);
+     }
++    g_free(element_cache_buffers);
+ 
+     r->element_cache.init_node = vertex_cache_entry_init;
+     r->element_cache.compare_nodes = vertex_cache_entry_compare;
+@@ -287,11 +295,16 @@ void pgraph_gl_finalize_buffers(PGRAPHState *pg)
+ {
+     PGRAPHGLState *r = pg->gl_renderer_state;
+ 
+-    GLuint element_cache_buffers[element_cache_size];
++    /* CHIMERA: heap, not stack - see the note in pgraph_gl_init_buffers. This
++     * 200KB frame runs during the cross-session rebuild's finalize, called from
++     * deep in the pfifo drain, and on the stack it overruns the guest stack. */
++    GLuint *element_cache_buffers =
++        g_malloc_n(element_cache_size, sizeof(GLuint));
+     for (int i = 0; i < element_cache_size; i++) {
+         element_cache_buffers[i] = r->element_cache_entries[i].gl_buffer;
+     }
+     glDeleteBuffers(element_cache_size, element_cache_buffers);
++    g_free(element_cache_buffers);
+     lru_flush(&r->element_cache);
+ 
+     g_free(r->element_cache_entries);

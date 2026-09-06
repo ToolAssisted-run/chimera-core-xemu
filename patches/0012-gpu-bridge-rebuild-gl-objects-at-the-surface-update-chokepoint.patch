@@ -1,0 +1,36 @@
+gpu-bridge: rebuild GL objects at the surface-update chokepoint
+
+Continuing a saved Xbox project under the GL renderer aborted on a settled
+frame: a 2D title or menu resumes by replaying clear_surface / image_blit,
+which call pgraph_gl_surface_update straight from the pgraph command stream -
+not through draw_begin, get_framebuffer_surface or sync, the doors patch 0011
+guards. After a cross-session load the framebuffer and surface textures name
+a host GL context that is gone, so update_surface_part binds a gone framebuffer,
+it is never GL_FRAMEBUFFER_COMPLETE, and its assert aborts (SIGABRT surfaces as
+miniBox unimplemented syscall 200). Every path to that assert funnels through
+pgraph_gl_surface_update, so check the context there, at the one shared door,
+and rebuild before a gone name is bound. Cheap and a no-op once the objects
+match this session, so same-session loads and determinism are untouched.
+
+diff --git a/hw/xbox/nv2a/pgraph/gl/surface.c b/hw/xbox/nv2a/pgraph/gl/surface.c
+--- a/hw/xbox/nv2a/pgraph/gl/surface.c
++++ b/hw/xbox/nv2a/pgraph/gl/surface.c
+@@ -1335,6 +1335,18 @@
+ void pgraph_gl_surface_update(NV2AState *d, bool upload, bool color_write,
+                            bool zeta_write)
+ {
++    /* Every path that binds a surface to the framebuffer funnels through here
++     * (update_surface_part below), and after a cross-session savestate load the
++     * framebuffer and surface textures name a context that is gone. A 2D title
++     * or menu reaches this by clear_surface or image_blit - not by draw_begin,
++     * get_framebuffer_surface or sync, the doors already guarded - so the gone
++     * framebuffer gets bound, is never GL_FRAMEBUFFER_COMPLETE, and the assert
++     * in update_surface_part aborts (SIGABRT -> miniBox syscall 200). Rebuild
++     * the context here, at the one door they all share, before that happens.
++     * A no-op once the objects match this session, so same-session loads and
++     * determinism are untouched. */
++    pgraph_gl_check_context(d);
++
+     PGRAPHState *pg = &d->pgraph;
+     PGRAPHGLState *r = pg->gl_renderer_state;
+ 
