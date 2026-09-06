@@ -35,8 +35,25 @@ enum {
 	 * append-only, so a host whose list is at least as long as the guest's
 	 * knows every opcode the guest can emit - and a guest that learns
 	 * otherwise refuses to start rather than calling into a hole. */
-	GL_OP_LIST_LENGTH = 3
+	GL_OP_LIST_LENGTH = 3,
+
+	/* Which real context the calls are landing on. The names every GL object
+	 * is are handed out by one context and live in emulated memory, so a
+	 * whole-machine savestate carries them into a session whose context is
+	 * gone; comparing this against the one an object came from is the only way
+	 * to notice, and rebuilding is the answer (see pgraph_gl_check_context).
+	 * Zero when there is no bridge or the host is older than the question. */
+	GL_OP_CONTEXT_ID = 4
 };
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+/* The id above, fetched across the bridge. Zero when it cannot be told. */
+uint64_t chimera_gl_context_id(void);
+#ifdef __cplusplus
+}
+#endif
 
 struct GlVersionArgs {
 	uint64_t out;    /* guest pointer to a char buffer */

@@ -1,0 +1,103 @@
+diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.c b/hw/xbox/nv2a/pgraph/gl/renderer.c
+--- a/hw/xbox/nv2a/pgraph/gl/renderer.c
++++ b/hw/xbox/nv2a/pgraph/gl/renderer.c
+@@ -24,6 +24,10 @@
+ #include "debug.h"
+ #include "renderer.h"
+ 
++/* the bridge's context id, and the virtual-context binding reset (chimera-gl) */
++uint64_t chimera_gl_context_id(void);
++void chimera_glo_reset_bindings(void);
++
+ GloContext *g_nv2a_context_render;
+ GloContext *g_nv2a_context_display;
+ 
+@@ -99,6 +103,55 @@
+     pg->gl_renderer_state = NULL;
+ }
+ 
++/* Which real GL context the objects below were built in. A chimera savestate
++ * restores the whole guest, this static included, so after a load it holds the
++ * id from the machine that was saved; the live id is this session's. They
++ * differ exactly when the objects' names are gone. (0 = cannot tell.) */
++static uint64_t s_chimera_gl_context;
++
++/* Has the ground moved under the GL objects? Every name this renderer holds
++ * was handed out by one context and lives in emulated memory, so a savestate
++ * carries the names into a session where that context is gone; the driver
++ * refuses every call that names one and the guest is never told (the bridge
++ * answers the guest, not the driver). So compare the context the objects came
++ * from with the one the calls are landing on, and when it has changed, build
++ * them again from emulated memory - which is where they came from the first
++ * time. Called at the head of every path that is about to use a GL object.
++ *
++ * Cheap for that: one bridge call and an integer compare, next to a frame of
++ * drawing. */
++void pgraph_gl_check_context(NV2AState *d)
++{
++    const uint64_t live = chimera_gl_context_id();
++    if (live == 0 || live == s_chimera_gl_context) {
++        if (live != 0) {
++            s_chimera_gl_context = live;
++        }
++        return;
++    }
++
++    if (s_chimera_gl_context != 0 && d->pgraph.gl_renderer_state != NULL) {
++        fprintf(stderr, "chimera: GL objects came from context %llu, now %llu; "
++            "rebuilding\n", (unsigned long long)s_chimera_gl_context,
++            (unsigned long long)live);
++        /* the virtual contexts remember bindings that name gone objects; forget
++         * them before any bind, then tear the objects down and build again */
++        chimera_glo_reset_bindings();
++        pgraph_gl_finalize(d);
++        /* Deleting names the gone context handed out leaves errors queued, and
++         * the init below asserts a clean slate (pgraph_gl_init_buffers). They
++         * are the errors of a context that no longer exists; drain them. */
++        while (glGetError() != GL_NO_ERROR) { /* discard */ }
++        pgraph_gl_init(d, &error_abort);
++        /* nothing in the caches survived, so the next draw re-fetches its
++         * textures, shaders and surfaces from VRAM rather than reaching for a
++         * handle the driver no longer knows */
++        pgraph_gl_mark_textures_possibly_dirty(d, 0, memory_region_size(d->vram));
++        pgraph_gl_update_entire_memory_buffer(d);
++    }
++    s_chimera_gl_context = live;
++}
++
+ static void pgraph_gl_flip_stall(NV2AState *d)
+ {
+     NV2A_GL_DFRAME_TERMINATOR();
+diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.h b/hw/xbox/nv2a/pgraph/gl/renderer.h
+--- a/hw/xbox/nv2a/pgraph/gl/renderer.h
++++ b/hw/xbox/nv2a/pgraph/gl/renderer.h
+@@ -268,6 +268,7 @@
+ void pgraph_gl_sync(NV2AState *d);
+ void pgraph_gl_update_entire_memory_buffer(NV2AState *d);
+ void pgraph_gl_init_display(NV2AState *d);
++void pgraph_gl_check_context(NV2AState *d);
+ void pgraph_gl_finalize_display(PGRAPHState *pg);
+ void pgraph_gl_init_reports(NV2AState *d);
+ void pgraph_gl_finalize_reports(PGRAPHState *pg);
+diff --git a/hw/xbox/nv2a/pgraph/gl/draw.c b/hw/xbox/nv2a/pgraph/gl/draw.c
+--- a/hw/xbox/nv2a/pgraph/gl/draw.c
++++ b/hw/xbox/nv2a/pgraph/gl/draw.c
+@@ -133,6 +133,7 @@
+ 
+ void pgraph_gl_draw_begin(NV2AState *d)
+ {
++    pgraph_gl_check_context(d);
+     PGRAPHState *pg = &d->pgraph;
+     PGRAPHGLState *r = pg->gl_renderer_state;
+ 
+diff --git a/hw/xbox/nv2a/pgraph/gl/display.c b/hw/xbox/nv2a/pgraph/gl/display.c
+--- a/hw/xbox/nv2a/pgraph/gl/display.c
++++ b/hw/xbox/nv2a/pgraph/gl/display.c
+@@ -405,6 +405,7 @@
+ 
+ int pgraph_gl_get_framebuffer_surface(NV2AState *d)
+ {
++    pgraph_gl_check_context(d);
+     PGRAPHState *pg = &d->pgraph;
+     PGRAPHGLState *r = pg->gl_renderer_state;
+ 

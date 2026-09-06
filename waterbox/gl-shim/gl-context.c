@@ -101,6 +101,24 @@ void glo_ensure_current(void)
 {
 }
 
+#ifdef CHIMERA_GUEST
+/* After the GL objects have been built again in a new context, the bindings
+ * each virtual context remembers name objects that are gone. Forget them - no
+ * GL, just memory - so the next glo_set_current binds the defaults (0) rather
+ * than a framebuffer, vao or program the driver no longer knows. */
+void chimera_glo_reset_bindings(void)
+{
+    for (int i = 0; i < guest_context_count; i++) {
+        guest_contexts[i].fbo_draw = 0;
+        guest_contexts[i].fbo_read = 0;
+        guest_contexts[i].vao = 0;
+        guest_contexts[i].program = 0;
+        guest_contexts[i].active_texture = GL_TEXTURE0;
+    }
+    guest_current = NULL;
+}
+#endif
+
 void *chimera_glo_current(void)
 {
     return guest_current;
@@ -128,6 +146,12 @@ void glo_context_destroy(GloContext *context)
 }
 
 #else /* native reference */
+
+#include <stdint.h>
+/* The native context is stable and no state is loaded into a different one, so
+ * the renderer's context check has nothing to do here. */
+uint64_t chimera_gl_context_id(void) { return 0; }
+void chimera_glo_reset_bindings(void) {}
 
 #include <glad/gl.h>
 #include <EGL/egl.h>
