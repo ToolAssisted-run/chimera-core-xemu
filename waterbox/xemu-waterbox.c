@@ -499,6 +499,10 @@ static void release_and_retake_locks(void)
 static char g_loadError[256];
 static void chimera_find_ram(void);
 
+/* save-data re-use: seed the HDD's FATX from the project's savedata slot,
+ * before seal (xemu-savedata.c). Reads back through Export Save Data. */
+int chimera_savedata_import(char *err_out, size_t err_len);
+
 int main(void)
 {
     return 0; /* work happens in the exports */
@@ -606,6 +610,13 @@ ECL_EXPORT int Init(void)
     chimera_attach_gamepads();
     chimera_find_ram();
     frame_machinery_init();
+
+    /* Seed the hard disk's FATX with any save data the project brought, while
+     * the machine is built but not yet sealed, so the contents land in the
+     * baseline and a savestate carries only what the game writes later. */
+    if (!chimera_savedata_import(g_loadError, sizeof g_loadError)) {
+        return 0;
+    }
     return 1;
 }
 

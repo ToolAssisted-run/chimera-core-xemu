@@ -11,6 +11,19 @@
         "xiso"
       ],
       "help": "The game disc as an xiso image (.iso). Leave it empty and the machine boots to its dashboard from the hard disk image instead - the tray is simply open."
+    },
+    {
+      "id": "savedata",
+      "title": "Save data",
+      "min": 0,
+      "max": -1,
+      "formats": [
+        "xbx",
+        "bin",
+        "sav",
+        "dat"
+      ],
+      "help": "What the hard disk starts with already saved: per-title Xbox save games, under UDATA/<titleId>/<save>/. These are the files Emulator > Export Save Data... writes, put back under the exact same relative paths. Each is mounted read-only and pinned by hash and the movie cites it, so a movie that starts from a saved game is as reproducible as one that starts from a blank disk. A name the machine does not read there (anything not under UDATA/) is refused rather than silently dropped."
     }
   ]
 }

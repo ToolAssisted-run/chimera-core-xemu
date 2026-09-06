@@ -1,0 +1,11 @@
+diff --git a/ui/meson.build b/ui/meson.build
+--- a/ui/meson.build	2026-09-06 19:40:14.369075913 +0000
++++ b/ui/meson.build	2026-09-06 19:40:17.951083266 +0000
+@@ -64,6 +64,7 @@
+ 
+ else
+ xemu_ss.add(files('xemu-waterbox.c'))
++xemu_ss.add(files('xemu-savedata.c'))
+ xemu_ss.add(files('default-eeprom.c'))
+ if meson.is_cross_build()
+   # the waterbox build also carries the libc-level syscall shims
