@@ -7,14 +7,16 @@
 # core, the guest is built by xemu's OWN configure/meson (setup-guest.sh);
 # core.wbx is the qemu-system-i386 it links.
 #
-# Usage: ./build-package.sh [-r <chimera root>]
+# Usage: ./build-package.sh [-r <chimera root>] [-m <miniBox dir>]
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
 chimera_root=""
-while getopts "r:" opt; do
+minibox=""
+while getopts "r:m:" opt; do
 	case "$opt" in
 		r) chimera_root="$OPTARG" ;;
+		m) minibox="$OPTARG" ;;
 		*) exit 2 ;;
 	esac
 done
@@ -27,10 +29,13 @@ fi
 [ -n "$chimera_root" ] && [ -d "$chimera_root" ] || {
 	echo "chimera checkout not found; pass -r <path>" >&2; exit 1; }
 chimera_root="$(cd "$chimera_root" && pwd)"
-mb="$chimera_root/extern/chimera-common-minibox"
+# miniBox normally lives inside the chimera checkout; -m is for a checkout
+# that keeps it somewhere else (CI puts chimera under a path of its own).
+mb="${minibox:-$chimera_root/extern/chimera-common-minibox}"
+mb="$(cd "$mb" && pwd)"
 
 # the guest, via xemu's own meson cross build
-[ -f "$root/build/qemu-guest/build.ninja" ] || sh "$here/setup-guest.sh"
+[ -f "$root/build/qemu-guest/build.ninja" ] || sh "$here/setup-guest.sh" -m "$mb"
 ninja -C "$root/build/qemu-guest" qemu-system-i386
 cp "$root/build/qemu-guest/qemu-system-i386" "$root/build/core.wbx"
 sh "$mb/source/guest/check-wbx.sh" "$root/build/core.wbx"

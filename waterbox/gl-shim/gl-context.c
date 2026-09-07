@@ -148,6 +148,8 @@ void glo_context_destroy(GloContext *context)
 #else /* native reference */
 
 #include <stdint.h>
+#include "gl-bridge.h" /* where chimera_gl_context_id is declared */
+
 /* The native context is stable and no state is loaded into a different one, so
  * the renderer's context check has nothing to do here. */
 uint64_t chimera_gl_context_id(void) { return 0; }

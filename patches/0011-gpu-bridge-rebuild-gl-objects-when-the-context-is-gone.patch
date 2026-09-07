@@ -5,9 +5,9 @@ diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.c b/hw/xbox/nv2a/pgraph/gl/renderer
  #include "debug.h"
  #include "renderer.h"
  
-+/* the bridge's context id, and the virtual-context binding reset (chimera-gl) */
++/* the bridge's context id (chimera-gl); the binding reset next to it comes in
++ * with gloffscreen.h, which renderer.h already includes */
 +uint64_t chimera_gl_context_id(void);
-+void chimera_glo_reset_bindings(void);
 +
  GloContext *g_nv2a_context_render;
  GloContext *g_nv2a_context_display;

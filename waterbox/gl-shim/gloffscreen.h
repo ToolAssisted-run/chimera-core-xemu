@@ -43,6 +43,12 @@ void glo_readpixels(GLenum gl_format, GLenum gl_type,
 bool chimera_gl_available(void);
 const char *chimera_gl_describe(void);
 
+/* Forget every binding the virtual contexts remember. Called when the GL
+ * objects are about to be rebuilt in a different real context: the names those
+ * bindings hold were handed out by a context that is gone, so binding them
+ * again would name nothing. Memory only, no GL. */
+void chimera_glo_reset_bindings(void);
+
 /* opaque context handoff for the inline pfifo service (pfifo.c) */
 void *chimera_glo_current(void);
 void *chimera_glo_render(void);
