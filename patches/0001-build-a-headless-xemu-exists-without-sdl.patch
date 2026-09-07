@@ -265,13 +265,14 @@ index 86acebb85c..5c83f41f8b 100644
    'xemu-controllers.cc',
  
    'xemu.c',
-@@ -53,6 +61,16 @@ elif host_os == 'darwin'
+@@ -53,6 +61,17 @@ elif host_os == 'darwin'
    xemu_ss.add(files('xemu-os-utils-macos.m'))
  endif
  xemu_ss.add(imgui, implot, stb_image, sdl, opengl, fa, fpng, json, fatx, tomlplusplus, genconfig)
 +
 +else
 +xemu_ss.add(files('xemu-waterbox.c'))
++xemu_ss.add(files('xemu-savedata.c'))
 +xemu_ss.add(files('default-eeprom.c'))
 +if meson.is_cross_build()
 +  # the waterbox build also carries the libc-level syscall shims
