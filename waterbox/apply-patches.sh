@@ -38,7 +38,7 @@ cp "$here"/gl-shim/gloffscreen.h "$here"/gl-shim/gl-context.c \
    "$here"/gl-shim/gl-bridge-cshim.cpp \
    "$here"/generated-gl/gl-bridge-guest.cpp "$here"/generated-gl/gl-bridge-ops.h \
    "$xemu/hw/xbox/nv2a/pgraph/chimera-gl/"
-cp "$root/../chimera/extern/tools/chimera-common-minibox/source/gl/gl-bridge.h" \
+cp "$root/../chimera/extern/chimera-common-minibox/source/gl/gl-bridge.h" \
    "$xemu/hw/xbox/nv2a/pgraph/chimera-gl/" 2>/dev/null || \
    cp "$here/gl-shim/gl-bridge.h" "$xemu/hw/xbox/nv2a/pgraph/chimera-gl/"
 cp -r "$here/glad" "$xemu/hw/xbox/nv2a/pgraph/chimera-gl/"

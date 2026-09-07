@@ -25,7 +25,7 @@ mkdir -p "$run"
 # MINIBOX_DIR, or the sibling checkout: a path built from $HOME works on the
 # machine that wrote it and nowhere else - a runner's $HOME is not a developer's.
 mb="${MINIBOX_DIR:-}"
-[ -n "$mb" ] || for c in "$root/../chimera/extern/tools/chimera-common-minibox" "$HOME/chimera/extern/tools/chimera-common-minibox"; do
+[ -n "$mb" ] || for c in "$root/../chimera/extern/chimera-common-minibox" "$HOME/chimera/extern/chimera-common-minibox"; do
 	[ -d "$c" ] && { mb="$c"; break; }
 done
 [ -n "$mb" ] && [ -d "$mb" ] || { echo "miniBox not found; set MINIBOX_DIR" >&2; exit 1; }

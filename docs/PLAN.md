@@ -379,7 +379,7 @@ startup, which looks exactly like a new deadlock.
 ## Build facts discovered so far
 
 - meson 1.5.1 / ninja 1.11.1 / python 3.12 on the box; guest toolchain at
-  extern/tools/chimera-common-minibox/build/meson-cpp (guest_cpp=true build,
+  extern/chimera-common-minibox/build/meson-cpp (guest_cpp=true build,
   libstdc++ sysroot present).
 - QEMU subprojects that matter: berkeley-softfloat-3, berkeley-testfloat-3,
   keycodemapdb, tomlplusplus, xxhash, nv2a_vsh_cpu, dsp56300 (M3). All meson

@@ -10,7 +10,7 @@
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"
-mb="${MINIBOX_DIR:-$HOME/chimera/extern/tools/chimera-common-minibox}"
+mb="${MINIBOX_DIR:-$HOME/chimera/extern/chimera-common-minibox}"
 while getopts "m:" opt; do
 	case "$opt" in
 		m) mb="$OPTARG" ;;

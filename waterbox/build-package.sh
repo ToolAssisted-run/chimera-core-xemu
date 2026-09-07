@@ -27,7 +27,7 @@ fi
 [ -n "$chimera_root" ] && [ -d "$chimera_root" ] || {
 	echo "chimera checkout not found; pass -r <path>" >&2; exit 1; }
 chimera_root="$(cd "$chimera_root" && pwd)"
-mb="$chimera_root/extern/tools/chimera-common-minibox"
+mb="$chimera_root/extern/chimera-common-minibox"
 
 # the guest, via xemu's own meson cross build
 [ -f "$root/build/qemu-guest/build.ninja" ] || sh "$here/setup-guest.sh"
