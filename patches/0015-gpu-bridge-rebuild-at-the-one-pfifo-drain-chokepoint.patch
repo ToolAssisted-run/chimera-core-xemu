@@ -1,0 +1,48 @@
+gpu-bridge: rebuild at the one pfifo-drain chokepoint, not per GL call
+
+The renderer rebuilt gone-context GL objects only at the doors 0011/0012 named
+one at a time - draw_begin, get_framebuffer_surface, sync, surface_update - so a
+game that reached a gone object by some other method (a texture upload, a clear,
+an image_blit) still aborted after a fresh-process savestate load. Move the
+check to the single point that dominates every GL-touching path: the renderer's
+process_pending op. pgraph_process_pending() calls it at the head of every pfifo
+drain (pfifo_drain / pfifo_thread), before pfifo_run_pusher runs one pgraph
+method and before the display path's pfifo_service_pending - so the first GL
+touch of any kind after a load rebuilds first, at a shallow call depth, and no
+later path can bind a gone name. Unconditional (a fresh load's first drain may
+carry no pending flag) and a no-op once the objects match this session, so the
+now-redundant per-door checks stay only as harmless belt-and-braces, and native
+builds (context id 0) are unaffected. Read gl_renderer_state after the check:
+a rebuild frees and reallocates it.
+
+diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.c b/hw/xbox/nv2a/pgraph/gl/renderer.c
+--- a/hw/xbox/nv2a/pgraph/gl/renderer.c
++++ b/hw/xbox/nv2a/pgraph/gl/renderer.c
+@@ -172,6 +172,27 @@
+ static void pgraph_gl_process_pending(NV2AState *d)
+ {
+     PGRAPHState *pg = &d->pgraph;
++
++    /* THE cross-session rebuild point. pgraph_process_pending() calls this op
++     * at the head of every pfifo drain (pfifo_drain / pfifo_thread), before
++     * pfifo_run_pusher executes a single pgraph method and before the display
++     * path's pfifo_service_pending - so it runs ahead of EVERY GL-touching path
++     * there is: draw, clear_surface, image_blit, a texture or surface upload, a
++     * report. After a fresh-process savestate load the objects those paths
++     * reach name a host GL context that is gone; checking here rebuilds them
++     * once, up front and at a shallow call depth, so no later path can bind a
++     * gone name. Unconditional on purpose - not gated on a pending flag, since
++     * the drain that first touches GL after a load may carry none - and it is a
++     * no-op once the objects match this session (one bridge call, an integer
++     * compare), and entirely a no-op in the native reference build where the
++     * context id is 0. This is the one hook; the checks patch 0011/0012 put at
++     * draw_begin, get_framebuffer_surface, sync and surface_update are now
++     * redundant belt-and-braces (each a no-op once this has run). */
++    pgraph_gl_check_context(d);
++
++    /* read r only AFTER the check: a rebuild frees and reallocates
++     * gl_renderer_state (pgraph_gl_finalize/pgraph_gl_init), so a pointer taken
++     * before it would dangle. */
+     PGRAPHGLState *r = pg->gl_renderer_state;
+ 
+     if (qatomic_read(&r->downloads_pending) ||
