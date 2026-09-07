@@ -22,8 +22,15 @@ mkdir -p "$run"
 [ -x "$nat" ] || { echo "native build missing (waterbox/setup-native.sh + ninja)" >&2; exit 1; }
 [ -x "$wbx" ] || { echo "guest build missing (waterbox/setup-guest.sh + ninja qemu-system-i386)" >&2; exit 1; }
 
-mbh="$HOME/chimera/extern/tools/chimera-common-minibox/build/meson-cpp/source/host"
-mb="$HOME/chimera/extern/tools/chimera-common-minibox"
+# MINIBOX_DIR, or the sibling checkout: a path built from $HOME works on the
+# machine that wrote it and nowhere else - a runner's $HOME is not a developer's.
+mb="${MINIBOX_DIR:-}"
+[ -n "$mb" ] || for c in "$root/../chimera/extern/tools/chimera-common-minibox" "$HOME/chimera/extern/tools/chimera-common-minibox"; do
+	[ -d "$c" ] && { mb="$c"; break; }
+done
+[ -n "$mb" ] && [ -d "$mb" ] || { echo "miniBox not found; set MINIBOX_DIR" >&2; exit 1; }
+mb="$(cd "$mb" && pwd)"
+mbh="$mb/build/meson-cpp/source/host"
 [ -x "$runwbx" ] || gcc -O2 -DCHIMERA_GL_BRIDGE -o "$runwbx" \
 	"$here/run-wbx.c" "$here/gl-host.c" "$here/glad/src/gl.c" \
 	-I "$mb/source/host" -I "$mb/source/gl" \
