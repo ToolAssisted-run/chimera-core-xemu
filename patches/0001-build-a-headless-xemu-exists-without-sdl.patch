@@ -174,7 +174,7 @@ index 82e5f5af65..9c40dd3294 100644
  elif host_os == 'linux'
 -  vulkan = dependency('vulkan')
 +  # CHIMERA: the vk renderer is optional; headless builds have no Vulkan
-+  vulkan = dependency('vulkan', required: false)
++  vulkan = get_option('opengl').disabled() ? not_found : dependency('vulkan', required: false)
  endif
  
  if vulkan.found()

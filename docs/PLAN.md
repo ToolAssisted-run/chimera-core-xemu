@@ -361,11 +361,14 @@ The one cost is the re-translation after a restore: the replayed frames run
 about 12% slower while the code the game is running is translated again. Not
 a hitch - it is spread over the frames - and the trade the user asked for.
 
-The native reference gate could not be run on this machine (the native build
-wants libssl-dev, which is not installed and cannot be); the sandbox legs
-above are the evidence, and every decision added is a function of the guest's
-own sequence of reads, writes and translations, so native and sandbox agree by
-construction.
+The gate, with the disc inserted, 600 frames: native deterministic, native ==
+sandbox (15,978,428 bytes of state), the audio leg, and the savestate leg -
+save+load around EVERY frame changes nothing, which is StateLoaded's flush
+exercised six hundred times. Two build facts on the way: the native build
+wants libssl-dev (curl), and a machine with libvulkan-dev made xemu's
+configure build the Vulkan renderer, which needs GL headers the headless
+reference has not - the vk dependency is now gated on the opengl option
+(patch 0001), which the reference disables.
 
 ## The native determinism story (still true, prerequisite)
 
