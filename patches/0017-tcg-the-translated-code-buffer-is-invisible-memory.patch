@@ -1,0 +1,46 @@
+tcg: the translated-code buffer lives in memory a savestate does not carry
+
+Every byte of it is derived from guest memory the state does carry, and 215
+MB of a 316 MB Prince of Persia state was this buffer - translations of code
+the machine had run since boot, kept because the buffer is never flushed until
+it fills. In the chimera guest it is allocated from the sandbox's invisible
+arena, so it is in no savestate and in no greenzone delta; the driver flushes
+every translation when a state is loaded (StateLoaded, ui/xemu-waterbox.c),
+and the machine re-translates what it runs from the memory it was given,
+exactly as it did the first time. The regions are still made RWX and guarded
+by tcg_region_init as before.
+
+diff --git a/tcg/region.c b/tcg/region.c
+index 2181267..c9d03a3 100644
+--- a/tcg/region.c
++++ b/tcg/region.c
+@@ -688,6 +688,29 @@ static int alloc_code_gen_buffer(size_t size, int splitwx, Error **errp)
+     ERRP_GUARD();
+     int prot, flags;
+ 
++#ifdef CHIMERA_GUEST
++    /*
++     * CHIMERA: the translated code lives in memory a savestate does not
++     * carry. Every byte of it is derived from guest memory the state does
++     * carry, and 215 MB of a 316 MB Prince of Persia state was this buffer.
++     * So it comes from the sandbox's invisible arena, and the driver flushes
++     * every translation when a state is loaded (StateLoaded in
++     * ui/xemu-waterbox.c): the machine then re-translates what it runs, from
++     * the memory it was given, exactly as it did the first time.
++     */
++    if (splitwx <= 0) {
++        extern void *alloc_invisible(size_t);
++        void *buf = alloc_invisible(size);
++        if (buf == NULL) {
++            error_setg(errp, "allocate %zu bytes of invisible memory for the jit buffer", size);
++            return -1;
++        }
++        region.start_aligned = buf;
++        region.total_size = size;
++        return PROT_READ | PROT_WRITE;   /* the regions are made RWX below */
++    }
++#endif
++
+     if (splitwx) {
+         prot = alloc_code_gen_buffer_splitwx(size, errp);
+         if (prot >= 0) {

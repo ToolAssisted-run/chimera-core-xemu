@@ -316,6 +316,57 @@ with a GPU needs a renderer rebuild on load), and persistent save export
 savestates and movies but are not yet exported as files between
 sessions).
 
+## What a savestate weighs, and what it was made of (2026-09-18)
+
+Prince of Persia at frame 2400 was a 594 MB state, and the machine's own
+memory in use was 37 MB of it. Read page by page (the block format is plain:
+status map, dirty map, then the dirty visible pages in order), the rest was:
+
+- **287 MB: the GL renderer's shader caches, holding sixteen bytes a page.**
+  `pgraph_gl_init_shaders` mallocs fifty thousand ShaderBindings of 4.9 KB and
+  fifty thousand module entries and calls `lru_add_free` on every one - a link
+  written into each, one touch per page, after the machine is sealed. Patch
+  0016 gives Lru a POOL, the untouched tail of the array, from which an entry
+  is taken only when no evicted one is free. A wrong first reading is worth
+  recording: sampling those pages against the ISO said "disc data", because a
+  window of zeros is found anywhere in a 2.5 GB image - probe with non-zero
+  windows, and dump a page before believing a match.
+- **215 MB: the TCG translated-code buffer** (256 MB, RWX), filling as the game
+  runs and never flushed. Every byte of it is derived from memory the state
+  carries, so patch 0017 allocates it from the invisible arena (never in a
+  state, never in a greenzone delta) and the new `StateLoaded` export - called
+  by the chimera engine after every load, with the machine stopped - flushes
+  every translation, so the machine re-translates from the memory it was given.
+  The layout moves 256 MB from the mmap arena to the invisible one (416 MB).
+- The disc mirror in the COW overlay (chimera-latency.c): the overlay is now
+  per SECTOR - base, bytes, zero, or a mirror of a stretch of a mounted image,
+  verified byte for byte against the last reads off that image - so a game
+  that installs itself onto the hard disk costs eight bytes a sector rather
+  than a second copy of the disc (the PS3's Oblivion did that with 4.3 GB;
+  Prince of Persia copies only 290 KB, so here it is correctness for the games
+  that do). A chunk no longer copies 64 KB of base on a 512-byte write either.
+
+Measured on the GTX 1060, Prince of Persia, 2400 frames, 4 GB greenzone:
+
+| | before | after |
+|---|---|---|
+| state at frame 300 / 1200 / 2400 | 77 / 491 / 594 MB | 40 / 88 / 98 MB |
+| greenzone anchor near 1190 | 188 MB | 78 MB |
+| restore, anchor + deltas | 221 ms | 90-135 ms |
+| 2400 frames straight | 80.6 s | 80.3 s |
+| three rewinds to 1200, each replayed to 2400 | 309 s | 338 s |
+| System RAM at the end, all four runs | identical | |
+
+The one cost is the re-translation after a restore: the replayed frames run
+about 12% slower while the code the game is running is translated again. Not
+a hitch - it is spread over the frames - and the trade the user asked for.
+
+The native reference gate could not be run on this machine (the native build
+wants libssl-dev, which is not installed and cannot be); the sandbox legs
+above are the evidence, and every decision added is a function of the guest's
+own sequence of reads, writes and translations, so native and sandbox agree by
+construction.
+
 ## The native determinism story (still true, prerequisite)
 
 `waterbox/run-determinism-native.sh N` boots the real firmware (MCPX 1.0 +

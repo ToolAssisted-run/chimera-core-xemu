@@ -522,6 +522,20 @@ ECL_EXPORT const char *GetLoadError(void)
     return g_loadError;
 }
 
+/* Told by the host after every load of the machine (a savestate, a branch
+ * file, a greenzone restore), with the machine stopped. The translated-code
+ * buffer is invisible memory (patch 0017: it is in no state), so it now
+ * describes the machine that was just REPLACED - the TranslationBlocks it
+ * holds, the jump caches and page lists that point into it. Everything of it
+ * goes, and the machine translates afresh from the memory it was given, as it
+ * did the first time. The flush wants the machine stopped, which between
+ * frames it is. */
+#include "exec/tb-flush.h"
+ECL_EXPORT void StateLoaded(void)
+{
+    tb_flush__exclusive_or_serial();
+}
+
 ECL_EXPORT int Init(void)
 {
     setlocale(LC_NUMERIC, "C");

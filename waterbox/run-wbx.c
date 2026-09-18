@@ -134,9 +134,9 @@ int main(int argc, char **argv)
     mb_memory_layout_template layout = {
         512u << 20,  /* sbrk */
         16u << 20,   /* sealed */
-        128u << 20,  /* invis */
+        416u << 20,  /* invis: 128, plus the 256 MB TCG buffer (patch 0017) and room */
         256u << 20,  /* plain */
-        2048u << 20, /* mmap */
+        1760u << 20, /* mmap */
     };
     freader fr = { wf };
     mb_return r;
