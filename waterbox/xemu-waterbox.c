@@ -62,6 +62,7 @@ int nv2a_chimera_read_display(uint8_t *out, int cap_w, int cap_h,
 bool chimera_gl_try_bridge(uint64_t addr);
 #endif
 
+static void idle_patch_try(void);
 static void chimera_choose_renderer(bool want_gpu)
 {
     g_config.display.renderer = CONFIG_DISPLAY_RENDERER_NULL;
@@ -297,6 +298,104 @@ static void governor_tick(void *opaque)
 static bool frame_done;
 static bool debug_no_pause; /* CHIMERA_DEBUG_NOPAUSE: boot-bisect aid */
 
+#include "exec/cpu-common.h"
+#include "hw/intc/i8259.h"
+#include "hw/isa/i8259_internal.h"
+
+static uint8_t *g_ramPtr;   /* the machine's RAM, once it exists (chimera_find_ram) */
+static int64_t g_ramSize;
+
+/* The machine's RAM, by its real name. The Xbox is UMA: "xbox.ram" is system
+ * RAM, video RAM and the GPU's working memory all at once (pc.ram exists but is
+ * a decoy). Looked up after the machine exists. */
+static void chimera_find_ram(void)
+{
+    RAMBlock *rb = qemu_ram_block_by_name("xbox.ram");
+    if (rb != NULL) {
+        g_ramPtr = qemu_ram_get_host_addr(rb);
+        g_ramSize = (int64_t)qemu_ram_get_used_length(rb);
+    }
+}
+
+/* ---- the kernel's idle loop, and why it is made to halt ------------------
+ *
+ * The Xbox kernel never halts. KiIdleLoop spins - sti, nop, nop, cli, is the
+ * DPC queue empty, is a thread ready, jump back - until an interrupt hands it
+ * work, and on the console that costs nothing anyone can see. Here every
+ * instruction is emulated: with the CPU modelled at 500 MIPS a frame is 8.3
+ * million instructions, and on Prince of Persia's menus 8 million of them
+ * were this loop - measured, with the exec loop entered two million times a
+ * frame because sti ends a block twice over. Half the movie's instructions
+ * were the machine waiting.
+ *
+ * So once the kernel is in RAM its first nop becomes hlt: sti, hlt, nop, cli,
+ * the sequence every other kernel uses. Interrupts are what end the spin
+ * (the DPC queue and the ready list are only ever filled by them), and a
+ * halted processor wakes on exactly those interrupts, so the loop's exits are
+ * the loop's exits; the virtual clock, which is the instruction count, is
+ * moved by icount to the interrupt's moment as the spin would have moved it,
+ * so rdtsc and every timer read the same. What differs is the CPU's own eip
+ * when an interrupt lands - the loop's, not the game's. The bytes are found by
+ * their pattern, not an address, because kernels differ; a kernel without the
+ * pattern is left alone, and says so once.
+ *
+ * Not before the kernel has unmasked an interrupt, though. The loop is entered
+ * for the first time during init, with the init thread already ready and every
+ * IRQ still masked at the PIC: the spinning loop finds that thread on its
+ * first pass, a halted one would sleep for an interrupt that can never come -
+ * measured: the machine stopped dead at instruction 25,356,977 with the PIC
+ * at 0xff. The PIC comes out of reset open, so the moment waited for is the
+ * mask having been CLOSED by the kernel's init and opened again, which only
+ * the init thread does, and it runs only after that first pass. From then on
+ * every exit from the loop IS an interrupt, and a halt is the same wait made
+ * cheap. Deterministic: a
+ * function of the kernel image and the machine's PIC, done at a frame
+ * boundary, in both flavours alike. The setting `idleSkip` turns it off
+ * (CHIMERA_IDLE_SKIP=0 natively), which is another machine. */
+static bool idle_skip = true;
+static bool idle_patched;
+static bool idle_saw_pic_closed;   /* the kernel has programmed the PIC: all masked, once */
+static int idle_scanned_frames;
+static void idle_patch_try(void)
+{
+    if (!idle_skip || idle_patched || g_ramPtr == NULL || idle_scanned_frames > 900) {
+        return;
+    }
+    /* The PIC comes out of reset with nothing masked, so "open" alone says
+     * nothing; the kernel's init masks everything and later opens what it
+     * uses, and only that second state means the first idle pass is behind
+     * us. */
+    if (isa_pic == NULL) {
+        return;
+    }
+    if (isa_pic->imr == 0xff) {
+        idle_saw_pic_closed = true;
+        return;
+    }
+    if (!idle_saw_pic_closed) {
+        return;
+    }
+    idle_scanned_frames++;
+    static const uint8_t pattern[] = { 0xfb, 0x90, 0x90, 0xfa, 0x3b, 0x6d, 0x00, 0x74 };
+    const size_t lo = 0x10000, hi = (size_t)MIN((int64_t)(8u << 20), g_ramSize);
+    if (hi <= lo + sizeof pattern) {
+        return;
+    }
+    const uint8_t *hit = memmem(g_ramPtr + lo, hi - lo, pattern, sizeof pattern);
+    if (hit == NULL) {
+        if (idle_scanned_frames == 900) {
+            fprintf(stderr, "[idle] the kernel's idle loop was not found in RAM; it keeps spinning\n");
+        }
+        return;
+    }
+    const hwaddr at = (hwaddr)(hit - g_ramPtr) + 1;   /* the first nop */
+    const uint8_t hlt = 0xf4;
+    cpu_physical_memory_write(at, &hlt, 1);        /* through the bus: the translation cache hears of it */
+    idle_patched = true;
+    fprintf(stderr, "[idle] the kernel's idle loop at 0x%08llx halts now (pic mask 0x%02x)\n",
+            (unsigned long long)at - 1 + 0x80000000ull, isa_pic->imr);
+}
+
 void glo_release_current(void);
 
 static void frame_boundary(void *opaque)
@@ -363,6 +462,7 @@ static double prof_now(void)
 
 static void run_one_frame(void)
 {
+    idle_patch_try();
     /* One vblank per frame, delivered at the boundary while the machine is
      * still paused: nv2a's gfx_update raises NV_PCRTC_INTR_0_VBLANK, and
      * the guest sees the interrupt the moment the next frame starts. With
@@ -412,6 +512,11 @@ static void run_one_frame(void)
 static void run_frames(long frames)
 {
     frame_machinery_init();
+    /* the native half of the idleSkip setting: the gate compares the two */
+    if (getenv("CHIMERA_IDLE_SKIP") != NULL && getenv("CHIMERA_IDLE_SKIP")[0] == '0') {
+        idle_skip = false;
+    }
+    chimera_find_ram();   /* the idle patch looks for the kernel in RAM */
     bool trace = getenv("CHIMERA_TRACE_FRAMES") != NULL;
 
     /* CHIMERA_PRESS=port:mask:from:to holds a button mask on one pad for a
@@ -452,6 +557,17 @@ static void run_frames(long frames)
     }
     if (audio_out) {
         fclose(audio_out);
+    }
+
+    /* CHIMERA_RAM_OUT: the machine's RAM at the end - the native half of a
+     * memory compare */
+    const char *ram_path = getenv("CHIMERA_RAM_OUT");
+    if (ram_path && g_ramPtr) {
+        FILE *f = fopen(ram_path, "wb");
+        if (f) {
+            fwrite(g_ramPtr, 1, (size_t)g_ramSize, f);
+            fclose(f);
+        }
     }
 
     /* CHIMERA_VIDEO_OUT: the last frame's presented picture, raw BGRA with
@@ -497,7 +613,6 @@ static void release_and_retake_locks(void)
 #include "io/channel-buffer.h"
 
 static char g_loadError[256];
-static void chimera_find_ram(void);
 
 /* save-data re-use: seed the HDD's FATX from the project's savedata slot,
  * before seal (xemu-savedata.c). Reads back through Export Save Data. */
@@ -552,6 +667,7 @@ ECL_EXPORT int Init(void)
     g_config.audio.use_dsp_jit = false;
     g_config.sys.mem_limit = (int)wbx_setting_double("memLimit128", 0)
         ? CONFIG_SYS_MEM_LIMIT_128 : CONFIG_SYS_MEM_LIMIT_64;
+    idle_skip = wbx_setting_bool("idleSkip", 1) != 0;
     for (int i = 0; i < CHIMERA_PORTS; i++) {
         char key[8], val[16];
         snprintf(key, sizeof key, "port%d", i + 1);
@@ -764,19 +880,7 @@ ECL_EXPORT int GetVideoHeight(void)
  * working memory all at once (pc.ram exists but is a decoy). One domain,
  * looked up after the machine exists.
  */
-#include "exec/cpu-common.h"
 
-static uint8_t *g_ramPtr;
-static int64_t g_ramSize;
-
-static void chimera_find_ram(void)
-{
-    RAMBlock *rb = qemu_ram_block_by_name("xbox.ram");
-    if (rb != NULL) {
-        g_ramPtr = qemu_ram_get_host_addr(rb);
-        g_ramSize = (int64_t)qemu_ram_get_used_length(rb);
-    }
-}
 
 ECL_EXPORT int GetMemoryDomainCount(void)
 {

@@ -370,6 +370,68 @@ configure build the Vulkan renderer, which needs GL headers the headless
 reference has not - the vk dependency is now gated on the opengl option
 (patch 0001), which the reference disables.
 
+## Where a frame's time went, and the idle loop that halts (2026-09-18)
+
+Sampled in the sandbox (gdb interrupted from outside every 80 ms, PCs
+symbolised against the guest ELF): 43% in translated code, and about 40% in
+the exec loop's own entry and exit - cpu_test_interrupt alone 18%. Counted
+per frame: 8.34 million guest instructions every frame (500 MIPS / 60), and on
+Prince of Persia's menus the exec loop entered 2 million times a frame, four
+instructions a trip, at two kernel addresses:
+
+    8001b02e  sti
+    8001b02f  nop
+    8001b030  nop
+    8001b031  cli
+    8001b032  cmp [ebp],ebp          ; a DPC queued?
+    8001b035  je  8001b043
+    ...
+    8001b043  cmp dword [ebx+0x2c],0 ; a thread ready?
+    8001b047  je  8001b02e
+
+KiIdleLoop. The Xbox kernel never halts: an idle console spins here, and here
+every instruction of the spin is emulated - 8 of the 8.3 million on a menu
+frame - with sti ending a translation block twice an iteration. Roughly half
+the movie's instructions were the machine waiting. Neither MMIO polling nor
+timers (two other theories, both counted and discarded) had anything to do
+with it.
+
+So the driver turns the loop's first nop into hlt (`idle_patch_try`, by byte
+pattern - kernels differ). Interrupts are the only thing that ends the spin,
+and a halted processor wakes on exactly those, so icount moves the clock to
+the interrupt's instant as the spin would have; rdtsc and every timer read the
+same, and the game runs the same: screenshots at 600, 1200, 1800 and 2400
+pixel-identical to the unpatched core, the audio stream byte-identical, native
+== sandbox, the gate's four legs green. RAM differs from the unpatched run in
+12.7 KB of 64 MB - the kernel's own stack and eip at the moments interrupts
+land.
+
+The one trap, which cost a stopped machine: the patch may not be in place
+for the loop's FIRST pass. The kernel enters KiIdleLoop during init with the
+init thread already ready and every IRQ masked at the PIC (0xff); the spin
+finds the thread, a halt waits for an interrupt that cannot come (stopped
+dead at instruction 25,356,977, measured). And the PIC comes out of reset
+OPEN (0x00), so "unmasked" alone says nothing: the patch waits for the mask
+to have been closed by init and opened again, which only the init thread
+does, after that pass. `idleSkip` (default on) is the setting; it is part of
+the machine.
+
+| GTX 1060, Prince of Persia | before | after |
+|---|---|---|
+| 2400 frames straight | 80.6 s | 44.9 s |
+| frames 1200-2400 of that | 29.0 s | 13.6 s |
+| Linux sandbox, headless, 1200 frames | 39.9 s | 20.6 s |
+
+Also measured and rejected: the warp governor at 100 us instead of 10 us
+gains 6% and changes 4 bytes of machine state (the green threads' rotation
+reaches the APU), so it stays.
+
+OPEN: a replay after a greenzone restore runs the same frames about three
+times slower than a straight run - on every core, the original included (86 s
+against 29 s for frames 1200-2400), and wider still with the idle skip. Not
+the idle skip's doing and not yet split between the GL rebuild on load, the
+translation flush and the halt path.
+
 ## The native determinism story (still true, prerequisite)
 
 `waterbox/run-determinism-native.sh N` boots the real firmware (MCPX 1.0 +
