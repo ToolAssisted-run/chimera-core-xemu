@@ -1,0 +1,42 @@
+coroutines: smaller stacks and a shallower pool, because every stack page is savestated
+
+A coroutine stack is guest memory the sandbox has to describe, and on
+Windows a stack page cannot be watched for writes: it is read, against a
+shadow, every time a frame's delta is taken. xemu kept some 260 coroutines
+alive at 1 MB of stack each - 274 MB compared per delta, 34 ms, a doubled
+frame - with a few kilobytes of each ever used. 256 KB stacks and a pool
+batch of 16.
+
+diff --git a/include/qemu/coroutine_int.h b/include/qemu/coroutine_int.h
+index 1da1485..938c701 100644
+--- a/include/qemu/coroutine_int.h
++++ b/include/qemu/coroutine_int.h
+@@ -33,7 +33,12 @@
+ extern __thread void *__safestack_unsafe_stack_ptr;
+ #endif
+ 
+-#define COROUTINE_STACK_SIZE (1 << 20)
++/* CHIMERA: 256 KB, not 1 MB. Every coroutine stack is guest memory the
++ * sandbox has to describe, and on Windows a stack page cannot be watched for
++ * writes - it is READ, against a shadow, every time a frame's delta is taken.
++ * xemu kept some 260 of these alive: 274 MB compared per delta, 34 ms, which
++ * doubled a frame. A few kilobytes of each was ever used. */
++#define COROUTINE_STACK_SIZE (256 << 10)
+ 
+ typedef enum {
+     COROUTINE_YIELD = 1,
+diff --git a/util/qemu-coroutine.c b/util/qemu-coroutine.c
+index 64d6264..550ec2e 100644
+--- a/util/qemu-coroutine.c
++++ b/util/qemu-coroutine.c
+@@ -22,7 +22,9 @@
+ #include "block/aio.h"
+ 
+ enum {
+-    COROUTINE_POOL_BATCH_MAX_SIZE = 128,
++    /* CHIMERA: 16, not 128 - see COROUTINE_STACK_SIZE; a pooled coroutine's
++     * stack is guest memory described in every frame's delta */
++    COROUTINE_POOL_BATCH_MAX_SIZE = 16,
+ };
+ 
+ /*

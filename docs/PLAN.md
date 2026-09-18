@@ -426,11 +426,24 @@ Also measured and rejected: the warp governor at 100 us instead of 10 us
 gains 6% and changes 4 bytes of machine state (the green threads' rotation
 reaches the APU), so it stays.
 
-OPEN: a replay after a greenzone restore runs the same frames about three
-times slower than a straight run - on every core, the original included (86 s
-against 29 s for frames 1200-2400), and wider still with the idle skip. Not
-the idle skip's doing and not yet split between the GL rebuild on load, the
-translation flush and the halt path.
+Then the "replay after a restore is three times slower" that every core
+showed, the original included (86 s against 29 s for frames 1200-2400) - and
+which the GL rebuild, the translation flush and the halt had nothing to do
+with (each switched off in turn: 127, 134, 122 s for the replayed 1200). The
+straight runs simply had no greenzone: chimera-run keeps the history only
+when a seek, a rewind or a history flag asks for it, and what TAStudio pays
+every frame is the CAPTURE. On Windows it doubled the frame: 1200 frames 29.5
+s without the history, 60.5 with it, 400 deltas at 34 ms each, where Linux
+paid 22% with 1177 deltas at 0.9 ms. The difference is 66,940 RWSTACK pages -
+274 MB of QEMU coroutine stacks, some 260 of them at 1 MB, a few kilobytes of
+each ever used - which on Windows cannot be watched for writes and are READ,
+against their shadows, at every delta. Patch 0018: 256 KB stacks and a pool
+batch of 16. Windows greenzone cost +31 s -> +10.7 s per 1200 frames, the
+delta save 34 -> 3.0 ms, and the stride tuner keeps 1039 of 1200 frames where
+it kept 400; System RAM identical, the gate green. The residual 3 ms against
+Linux's 0.9 is what stack there is left plus the epoch's VirtualProtect runs.
+
+
 
 ## The native determinism story (still true, prerequisite)
 
