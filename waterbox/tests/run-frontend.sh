@@ -9,8 +9,10 @@
 # black.
 #
 # It needs the same content the core gate needs: the MCPX boot ROM, a flash
-# BIOS and a hard disk image ($XBOX_FW_DIR, laid out as the core gate expects),
-# and optionally a disc ($XBOX_DVD_PATH). Without them it reports SKIP.
+# BIOS and a hard disk image ($XBOX_FW_DIR, laid out as the core gate expects) -
+# and, unlike the core gate, a DISC ($XBOX_DVD_PATH), because the frontend
+# starts a machine from a rom and a bios-only Xbox has none to hand it (see the
+# note beside that check). Without any of them it reports SKIP.
 #
 # Usage: ./run-frontend.sh [--chimera-root <path>] [--frames N]
 set -u
@@ -71,6 +73,25 @@ if [ ! -f "$mcpx" ] || [ ! -f "$bios" ] || [ ! -f "$hdd" ]; then
 	report "boot:frontend" SKIP "needs mcpx, bios and hdd under \$XBOX_FW_DIR"
 	report "gpu:frontend" SKIP "same"
 	report "keybinds" SKIP "would prove the package's bindings become the frontend's"
+	echo
+	echo "$ok ok, $failed failed, $skipped skipped"
+	exit 0
+fi
+
+# A DISC IS REQUIRED HERE, unlike the core gate, and this is the one place it
+# is not the content that is the reason. Chimera starts a machine when it is
+# given a ROM: --core registers a package and nothing more (MainForm.cs, "A rom
+# needs a core, and choosing one is never implicit"). An Xbox with no disc
+# still boots - to the dashboard - but there is no file to hand over, so the
+# frontend loads the package, starts nothing, and the witness Lua finds itself
+# looking at NullCore. Every leg below then failed with "no OK meta", which
+# named neither the cause nor the cure, and CI does not run this script, so
+# nobody saw it. Until Chimera can be asked on the command line to boot a
+# machine that needs no rom, this is a SKIP and says so.
+if [ -z "$disc" ]; then
+	report "boot:frontend" SKIP "set XBOX_DVD_PATH: Chimera boots a machine from a ROM and a bios-only Xbox has none to give (see the note above)"
+	report "gpu:frontend" SKIP "same"
+	report "keybinds" SKIP "the bindings are adopted when the package LOADS, which needs a booted machine: same"
 	echo
 	echo "$ok ok, $failed failed, $skipped skipped"
 	exit 0
@@ -147,12 +168,25 @@ reference_ram() {
 
 settings_config() { python3 "$here/settings-config.py" "$config" "$1" "$2" "$3"; }
 
+# The witness Lua writes its own diagnosis into the metadata as detail=, so a
+# failing leg can say what went wrong instead of pointing at a log. Without
+# this, "wrong core: NullCore" - which is the whole answer - read as "no OK
+# meta (see tests/work/null.log)", and the log did not contain it.
+why() { # <tag>
+	local d
+	d="$(sed -n 's/^detail=//p' "$work/$1.meta.txt" 2>/dev/null | head -1)"
+	if [ -n "$d" ]; then printf '%s' "$d"
+	elif [ -f "$work/$1.meta.txt" ]; then printf 'the run reported %s' "$(sed -n 's/^status=//p' "$work/$1.meta.txt" | head -1)"
+	else printf 'the frontend wrote no metadata at all (a dialog, a stall or a crash)'
+	fi
+}
+
 # --- 1. the deterministic machine: null renderer, RAM == the reference -----
 settings_config "$work/config.null.ini" '{"renderer": "null"}' "$firmware_json"
 if ! reference_ram "null" 0; then
 	report "boot:frontend" FAIL "reference runner error (see tests/work/ref.null.log)"
 elif ! run_frontend "null" "$work/config.null.ini" "$frames" "" "${disc:+$disc}"; then
-	report "boot:frontend" FAIL "no OK meta (see tests/work/null.log)"
+	report "boot:frontend" FAIL "$(why null) (see tests/work/null.log)"
 elif ! cmp -s "$work/ref.null.ram.bin" "$work/null.ram.bin"; then
 	report "boot:frontend" FAIL "System RAM differs from the sandbox reference"
 elif [ "$(sed -n 's/^ramsize=//p' "$work/null.meta.txt")" != "67108864" ]; then
@@ -170,7 +204,7 @@ if ! reference_ram "gpu" 1; then
 elif ! grep -q "gpu bridge:" "$work/ref.gpu.log"; then
 	report "gpu:frontend" SKIP "no GL context on this machine; the null leg above is the whole story"
 elif ! run_frontend "gpu" "$work/config.gpu.ini" "$frames" "$work/gpu.png" "${disc:+$disc}"; then
-	report "gpu:frontend" FAIL "no OK meta (see tests/work/gpu.log)"
+	report "gpu:frontend" FAIL "$(why gpu) (see tests/work/gpu.log)"
 elif ! cmp -s "$work/ref.gpu.ram.bin" "$work/gpu.ram.bin"; then
 	report "gpu:frontend" FAIL "System RAM differs from the GPU reference (driver mismatch?)"
 elif [ ! -s "$work/gpu.png" ]; then
