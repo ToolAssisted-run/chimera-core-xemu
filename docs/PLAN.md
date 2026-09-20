@@ -517,3 +517,144 @@ startup, which looks exactly like a new deadlock.
 - xemu's own UI (ui/xemu*.c, imgui, SDL3) hosts qemu_main on a second thread
   and owns main(); the port replaces that layer entirely.
 - Rust in QEMU 10.2 is optional and stays off.
+
+## What CI runs, and what it does not (2026-09-20)
+
+Chimera's `docs/gates.md` calls this failure mode G: *whatever CI does not run
+is not gated, whatever the script says.* The rule it sets is that the gap is
+written down rather than discovered, and that **if CI cannot run a leg,
+somebody owns running it, and the PLAN.md says who and when.** This section is
+that record. It is a proposal for Sergio where it says so.
+
+`.github/workflows/chimera.yml` substitutes one line -
+`echo "SKIP emulation legs: no Xbox bios on a public runner"` - for
+`waterbox/run-gate.sh` (239 lines). `waterbox/tests/run-frontend.sh` (228
+lines) is not mentioned at all. So of nine legs, CI runs none.
+
+| Leg | Where | CI | Needs |
+| --- | --- | --- | --- |
+| both flavors build from a clean checkout | workflow | RUNS | nothing |
+| the guest is sandbox-clean (`check-wbx.sh`) | workflow | RUNS | nothing |
+| the package loads in the real frontend (contract tests) | workflow | RUNS | nothing |
+| native:deterministic | run-gate.sh | no | mcpx + bios + hdd |
+| native == sandbox | run-gate.sh | no | mcpx + bios + hdd |
+| audio (byte-equal; plus "is sound" at 600+ frames) | run-gate.sh | no | mcpx + bios + hdd |
+| savestate round-trip | run-gate.sh | no | mcpx + bios + hdd |
+| input (START on pad 1 reaches the machine) | run-gate.sh | no | + a disc, 1200+ frames |
+| gpu (a real driver draws, native == sandbox) | run-gate.sh | no | + a disc, `XBOX_GPU=1`, an EGL context |
+| boot:frontend | tests/run-frontend.sh | no | mcpx + bios + hdd + a disc |
+| gpu:frontend | tests/run-frontend.sh | no | the same |
+| keybinds | tests/run-frontend.sh | no | the same (the bindings are adopted when the package LOADS, which needs a booted machine) |
+
+### Why, specifically
+
+**Content, not cost.** This core's blocker is not a runner's minutes; both
+flavors already build in the job, which is the expensive part. It is that an
+original Xbox has no HLE bios: nothing executes a single instruction without
+an MCPX boot ROM and a flash ROM, and neither may be distributed. There is no
+subset of the gate that runs without them, and that is measured rather than
+assumed - 2026-09-20, `XBOX_FW_DIR` pointed at a path that does not exist, on
+a cleared `build/gate`:
+
+```
+PASS: native deterministic at 60 frames
+FAIL: the sandbox run wrote no machine state
+FAIL: a run produced no audio samples at all
+FAIL: a 60-frame sandbox run wrote no machine state
+SKIP: input leg ...
+SKIP: gpu leg ...
+```
+
+Four legs red and one PASS that is not a real one: two native runs that both
+failed to boot are still identical to each other. Two things fall out of that
+run, and neither is fixed here:
+
+- **The native reference does not mind a missing boot ROM.** The sandbox said
+  "mount mcpx: cannot open the file to mount"; the native flavor said nothing
+  at all and ran. Absent reading as fine, which is gates.md mode C.
+- **`build/gate` is never cleared, so a leg whose run DIES compares the
+  previous run's files and passes.** Same command, same missing firmware, the
+  only difference being a `build/gate` left over from a good run: the
+  savestate leg printed `PASS: savestate leg - save+load around every frame
+  changes nothing` while all three of its sandbox runs had just died. On a
+  cleared directory the same leg says `FAIL: a 60-frame sandbox run wrote no
+  machine state`. That is gates.md mode B, in the one script whose job is to
+  not do that. It is not fixed in this commit because the obvious fix -
+  `rm -rf "$run"` at the top - would also throw away `eeprom-master.bin`,
+  which the script mints once ON PURPOSE because it is per-project persistent
+  data, so the fix is a decision about what the run dir is for rather than a
+  one-line tidy. Until it is made: **clear `build/gate` (keeping
+  `eeprom-master.bin`) before any gate run whose result you intend to write
+  down.**
+
+That is different from rpcs3, whose blocker IS cost, and whose first four legs
+need no content at all. Do not read xemu's gap as the same problem.
+
+**The disc is a second, separate condition**, and for the frontend gate it is
+not the content that is the reason. Chimera starts a machine when it is given
+a ROM; `--core` registers a package and nothing more. A bios-only Xbox boots
+to the dashboard perfectly well, but there is no file to hand the frontend, so
+every frontend leg would look at `NullCore`. Until Chimera can be told on the
+command line to boot a machine that needs no rom, the frontend gate needs a
+disc even to ask its non-disc questions. That one is fixable in Chimera, and
+it is the cheapest way to move three legs out of this table.
+
+### What a person needs in hand
+
+Five minutes, not an archaeology exercise. Lay the firmware out exactly like
+this and point `XBOX_FW_DIR` at the top of it (the default is
+`~/xbox-roms/Xbox BIOS`, which is where it sits on the development machine):
+
+```
+$XBOX_FW_DIR/
+  MCPX Boot ROM/mcpx_1.0.bin            512 bytes,  md5 d49c52a4102f6df7bcf8d0617ac475ed
+  Flash ROM (BIOS)/Complex_4627v1.03.bin  1 MiB,    md5 21445c6f28fca7285b0f167ea770d1e5
+  Hard Disk/xbox_hdd.qcow2              632 MB, a formatted retail HDD image with a dashboard on it
+```
+
+The names are literal - the gate writes them into the xemu TOML verbatim,
+spaces and parentheses and all. A different flash ROM revision is fine for
+booting but changes the machine, so a gate run that used one is not comparable
+with a gate run that used `Complex_4627v1.03`: say which one when reporting.
+
+Then, for the input, gpu and all three frontend legs, `XBOX_DVD_PATH` pointing
+at an Xbox disc image. Any booting retail title does; the input leg wants one
+that polls the pad, which a game does around frame 974 and the dashboard never
+does at all.
+
+Full local run:
+
+```
+# stale artifacts pass legs that died - see the mode B note above
+find build/gate -mindepth 1 ! -name eeprom-master.bin -delete
+XBOX_FW_DIR="$HOME/xbox-roms/Xbox BIOS" XBOX_DVD_PATH=/path/to/game.iso XBOX_GPU=1 \
+  MINIBOX_DIR=~/chimera/extern/chimera-common-minibox waterbox/run-gate.sh 1200
+XBOX_FW_DIR="$HOME/xbox-roms/Xbox BIOS" XBOX_DVD_PATH=/path/to/game.iso \
+  waterbox/tests/run-frontend.sh
+```
+
+1200 frames, not the default 60: below 600 the audio leg is correctly silent
+and below 1200 the input leg has nothing to press against.
+
+### Who owns running them, and when (proposal for Sergio)
+
+The legs CI cannot run are run by hand, on the development machine that holds
+the firmware, and the result is pasted into this file under a dated heading -
+one line per leg, plus which flash ROM and which disc. That makes "when did
+this last actually execute?" a question with an answer, which is the whole
+point of the rule.
+
+Three occasions, chosen because they are the moments this repo actually moves:
+
+1. **Before a submodule pin bump lands** - a new QEMU is the change most likely
+   to alter the machine, and the byte-equality legs are the only thing that
+   would notice.
+2. **Before a release is cut** (a dated `nightly-*`, or any tag a movie could
+   cite). A movie cites a package; a package nobody ran the gate against is a
+   citation with nothing behind it.
+3. **After any change to the savestate format, the GPU bridge, or vsched** -
+   the three subsystems whose faults the byte-equality legs catch and the
+   build-only CI cannot.
+
+Not "every push": the firmware is one machine's, and a rule nobody can keep is
+worse than a rule that names its three occasions.

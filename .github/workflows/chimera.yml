@@ -127,7 +127,18 @@ jobs:
           # thread-local storage, no forbidden imports, the layout the host maps.
           mb="$PWD/chimera-checkout/extern/chimera-common-minibox"
           sh "$mb/source/guest/check-wbx.sh" build/qemu-guest/qemu-system-i386
-          echo "SKIP emulation legs: no Xbox bios on a public runner (set XBOX_FW_DIR to run waterbox/run-gate.sh)"
+          # Nine legs SKIP here, and they are named one at a time on purpose.
+          # "SKIP emulation legs" was one line standing for all nine, and a
+          # line you cannot read a count out of hides how big the gap is. Who
+          # owns running these, and when, is docs/PLAN.md, "What CI runs".
+          for leg in "native:deterministic" "native == sandbox" "audio" "savestate" \
+                     "input (also needs a disc)" "gpu (also needs a disc and XBOX_GPU=1)"; do
+            echo "SKIP: $leg - no Xbox bios on a public runner (waterbox/run-gate.sh with XBOX_FW_DIR set)"
+          done
+          for leg in "boot:frontend" "gpu:frontend" "keybinds"; do
+            echo "SKIP: $leg - the same bios, plus a disc (waterbox/tests/run-frontend.sh)"
+          done
+          echo "--- gate: 0 of 9 emulation legs ran here; both flavors built and the guest is sandbox-clean"
 
       - name: Build and install the waterbox core package
         # The commit is the core's authoritative version: this build is the one
