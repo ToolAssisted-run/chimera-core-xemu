@@ -44,8 +44,41 @@ mbh="$mb/build/meson-cpp/source/host"
 # machine. Set CHIMERA_ICOUNT_SHIFT to move both at once.
 QEMU_ARGS="-rtc base=2000-01-01,clock=vm"
 
-# one minted EEPROM for every leg (it is per-project persistent data)
-if [ ! -f "$run/eeprom-master.bin" ]; then
+# Content minted ONCE and reused by every leg and every run of this script:
+# a fresh EEPROM has real randomness baked into it by xemu itself, and it is
+# per-project persistent data, not a leg's output. It lives in its own
+# directory, separate from every leg directory below, so that wiping a leg's
+# directory - which every leg below now does, unconditionally, before it
+# runs - can never take the EEPROM out with it.
+shared="$run/shared"
+mkdir -p "$shared"
+
+# Every leg below gets its own directory, wiped and recreated the moment the
+# leg starts, and never written to by any other leg. This is the fix for
+# docs/gates.md mode B: a single shared, never-cleared build/gate meant a leg
+# whose runs had just died could still find yesterday's (or another leg's)
+# output sitting under the same names, compare that leftover pair, and PASS.
+# With a private directory wiped on entry, a leg that dies writes nothing an
+# adjacent check can mistake for a result.
+leg_dir() {
+	d="$run/$1"
+	rm -rf "$d"
+	mkdir -p "$d"
+	printf '%s' "$d"
+}
+
+# xemu's native reference treats a missing BootROM/BIOS/HDD as non-fatal: it
+# queues an error message (extern/xemu system/vl.c) and boots without them,
+# so the process still exits 0 having "run to completion" on a machine that
+# never had firmware. The sandbox mounts each file itself and refuses to
+# start without it, dying loudly (see waterbox/xemu-waterbox.c). Hold native
+# to the same bar here so a missing-content run cannot pass as a real native
+# leg just because its exit code was 0.
+nat_log_ok() {
+	! grep -q "^xemu error: Failed to open" "$1"
+}
+
+if [ ! -f "$shared/eeprom-master.bin" ]; then
 	cat > "$run/xemu-seed.toml" <<EOF
 [general]
 show_welcome = false
@@ -58,12 +91,12 @@ mem_limit = '64'
 [sys.files]
 bootrom_path = '$fw/MCPX Boot ROM/mcpx_1.0.bin'
 flashrom_path = '$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin'
-eeprom_path = '$run/eeprom-master.bin'
+eeprom_path = '$shared/eeprom-master.bin'
 hdd_path = '$fw/Hard Disk/xbox_hdd.qcow2'
 EOF
 	XEMU_BASE_PATH="$run" CHIMERA_FRAMES=1 timeout 240 "$nat" \
 		-config_path "$run/xemu-seed.toml" $QEMU_ARGS >/dev/null 2>&1 || true
-	[ -f "$run/eeprom-master.bin" ] || { echo "eeprom mint failed" >&2; exit 1; }
+	[ -f "$shared/eeprom-master.bin" ] || { echo "eeprom mint failed" >&2; exit 1; }
 fi
 
 cat > "$run/xemu.toml" <<EOF
@@ -78,7 +111,7 @@ mem_limit = '64'
 [sys.files]
 bootrom_path = '$fw/MCPX Boot ROM/mcpx_1.0.bin'
 flashrom_path = '$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin'
-eeprom_path = '$run/eeprom-master.bin'
+eeprom_path = '$shared/eeprom-master.bin'
 hdd_path = '$fw/Hard Disk/xbox_hdd.qcow2'
 EOF
 if [ -n "${XBOX_DVD_PATH:-}" ]; then
@@ -87,20 +120,25 @@ fi
 
 fail=0
 
+# The base leg: native determinism, native == sandbox, and (below) the audio
+# comparison all read the very same set of runs, so they share one directory.
+base=$(leg_dir base)
+
 for i in A B; do
 	XEMU_BASE_PATH="$run" CHIMERA_FRAMES="$frames" \
-		CHIMERA_STATE_OUT="$run/state-nat-$i.bin" \
-		CHIMERA_AUDIO_OUT="$run/audio-nat-$i.s16" \
+		CHIMERA_STATE_OUT="$base/state-nat-$i.bin" \
+		CHIMERA_AUDIO_OUT="$base/audio-nat-$i.s16" \
 		timeout 590 "$nat" -config_path "$run/xemu.toml" $QEMU_ARGS \
-		> "$run/leg-nat-$i.log" 2>&1 || { echo "native leg $i died"; tail -3 "$run/leg-nat-$i.log"; fail=1; }
+		> "$base/leg-nat-$i.log" 2>&1 || { echo "native leg $i died"; tail -3 "$base/leg-nat-$i.log"; fail=1; }
+	nat_log_ok "$base/leg-nat-$i.log" || { echo "native leg $i ran without its firmware (see log)"; fail=1; }
 done
 # -s before cmp, on every leg below as well: two EMPTY state files compare
 # equal, so a machine that stopped serialising its state would have read as
 # "native deterministic" and then as "native == sandbox" - two passes on
 # nothing at all.
-if [ ! -s "$run/state-nat-A.bin" ] || [ ! -s "$run/state-nat-B.bin" ]; then
+if [ ! -s "$base/state-nat-A.bin" ] || [ ! -s "$base/state-nat-B.bin" ]; then
 	echo "FAIL: a native run wrote no machine state"; fail=1
-elif cmp -s "$run/state-nat-A.bin" "$run/state-nat-B.bin"; then
+elif cmp -s "$base/state-nat-A.bin" "$base/state-nat-B.bin"; then
 	echo "PASS: native deterministic at $frames frames"
 else
 	echo "FAIL: native runs differ"; fail=1
@@ -109,16 +147,16 @@ fi
 timeout 590 "$runwbx" "$wbx" \
 	--mcpx "$fw/MCPX Boot ROM/mcpx_1.0.bin" \
 	--bios "$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
-	--eeprom "$run/eeprom-master.bin" \
+	--eeprom "$shared/eeprom-master.bin" \
 	--hdd "$fw/Hard Disk/xbox_hdd.qcow2" \
 	${XBOX_DVD_PATH:+--dvd "$XBOX_DVD_PATH"} \
-	--frames "$frames" --state-out "$run/state-wbx.bin" \
-	--audio-out "$run/audio-wbx.s16" \
-	> "$run/leg-wbx.log" 2>&1 || { echo "sandbox leg died"; tail -3 "$run/leg-wbx.log"; fail=1; }
-if [ ! -s "$run/state-wbx.bin" ]; then
+	--frames "$frames" --state-out "$base/state-wbx.bin" \
+	--audio-out "$base/audio-wbx.s16" \
+	> "$base/leg-wbx.log" 2>&1 || { echo "sandbox leg died"; tail -3 "$base/leg-wbx.log"; fail=1; }
+if [ ! -s "$base/state-wbx.bin" ]; then
 	echo "FAIL: the sandbox run wrote no machine state"; fail=1
-elif cmp -s "$run/state-nat-A.bin" "$run/state-wbx.bin"; then
-	echo "PASS: native == sandbox at $frames frames ($(stat -c%s "$run/state-wbx.bin") bytes of state)"
+elif cmp -s "$base/state-nat-A.bin" "$base/state-wbx.bin"; then
+	echo "PASS: native == sandbox at $frames frames ($(stat -c%s "$base/state-wbx.bin") bytes of state)"
 else
 	echo "FAIL: native and sandbox states differ"; fail=1
 fi
@@ -126,20 +164,20 @@ fi
 # The audio leg: the APU monitor's sample stream is machine output; the two
 # native runs and the sandbox must produce the same bytes, and a boot that
 # reached the dashboard jingle must produce actual sound.
-if [ ! -s "$run/audio-nat-A.s16" ] || [ ! -s "$run/audio-wbx.s16" ]; then
+if [ ! -s "$base/audio-nat-A.s16" ] || [ ! -s "$base/audio-wbx.s16" ]; then
 	# an APU that stopped handing its monitor's samples over produces two empty
 	# files, and two empty files are byte-identical: the leg below would have
 	# congratulated a core that made no sound at all, which is exactly how
 	# flycast shipped silent for its whole life
 	echo "FAIL: a run produced no audio samples at all"; fail=1
-elif ! cmp -s "$run/audio-nat-A.s16" "$run/audio-nat-B.s16"; then
+elif ! cmp -s "$base/audio-nat-A.s16" "$base/audio-nat-B.s16"; then
 	echo "FAIL: native audio streams differ"; fail=1
-elif ! cmp -s "$run/audio-nat-A.s16" "$run/audio-wbx.s16"; then
+elif ! cmp -s "$base/audio-nat-A.s16" "$base/audio-wbx.s16"; then
 	echo "FAIL: native and sandbox audio differ"; fail=1
-elif [ "$frames" -ge 600 ] && ! LC_ALL=C grep -qm1 "[^\\x00]" "$run/audio-nat-A.s16"; then
+elif [ "$frames" -ge 600 ] && ! LC_ALL=C grep -qm1 "[^\\x00]" "$base/audio-nat-A.s16"; then
 	echo "FAIL: audio is pure silence"; fail=1
 else
-	echo "PASS: audio leg - $(stat -c%s "$run/audio-wbx.s16") bytes, native == sandbox"
+	echo "PASS: audio leg - $(stat -c%s "$base/audio-wbx.s16") bytes, native == sandbox"
 	# the samples are equal and there are some, but WHETHER THEY ARE SOUND is
 	# only asked past 600 frames: before the dashboard jingle the machine is
 	# silent by design, so the question has no honest answer yet. Said out loud,
@@ -150,19 +188,20 @@ fi
 # The savestate leg: 60 sandbox frames with the arena saved and reloaded
 # around every one of them - a loaded state must continue exactly like the
 # run it came from, so the end state must match a plain 60-frame run.
+save=$(leg_dir savestate)
 for mode in plain rr; do
 	[ "$mode" = rr ] && extra="--rerecord" || extra=""
 	timeout 590 "$runwbx" "$wbx" \
 		--mcpx "$fw/MCPX Boot ROM/mcpx_1.0.bin" \
 		--bios "$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
-		--eeprom "$run/eeprom-master.bin" \
+		--eeprom "$shared/eeprom-master.bin" \
 		--hdd "$fw/Hard Disk/xbox_hdd.qcow2" \
-		$extra --frames 60 --state-out "$run/state-wbx-$mode-60.bin" \
-		> "$run/leg-wbx-$mode-60.log" 2>&1 || { echo "sandbox $mode-60 leg died"; tail -3 "$run/leg-wbx-$mode-60.log"; fail=1; }
+		$extra --frames 60 --state-out "$save/state-wbx-$mode-60.bin" \
+		> "$save/leg-wbx-$mode-60.log" 2>&1 || { echo "sandbox $mode-60 leg died"; tail -3 "$save/leg-wbx-$mode-60.log"; fail=1; }
 done
-if [ ! -s "$run/state-wbx-plain-60.bin" ] || [ ! -s "$run/state-wbx-rr-60.bin" ]; then
+if [ ! -s "$save/state-wbx-plain-60.bin" ] || [ ! -s "$save/state-wbx-rr-60.bin" ]; then
 	echo "FAIL: a 60-frame sandbox run wrote no machine state"; fail=1
-elif cmp -s "$run/state-wbx-plain-60.bin" "$run/state-wbx-rr-60.bin"; then
+elif cmp -s "$save/state-wbx-plain-60.bin" "$save/state-wbx-rr-60.bin"; then
 	echo "PASS: savestate leg - save+load around every frame changes nothing"
 else
 	echo "FAIL: savestate round-trip diverges"; fail=1
@@ -173,25 +212,30 @@ fi
 # needs the DVD and at least 1200 frames; the press must leave a different
 # machine than the plain run, and native and sandbox must agree on it.
 if [ -n "${XBOX_DVD_PATH:-}" ] && [ "$frames" -ge 1200 ]; then
+	input=$(leg_dir input)
 	press="0:200:1000:$frames"
 	XEMU_BASE_PATH="$run" CHIMERA_FRAMES="$frames" CHIMERA_PRESS="$press" \
-		CHIMERA_STATE_OUT="$run/state-nat-press.bin" \
+		CHIMERA_STATE_OUT="$input/state-nat-press.bin" \
 		timeout 590 "$nat" -config_path "$run/xemu.toml" $QEMU_ARGS \
-		> "$run/leg-nat-press.log" 2>&1 || { echo "native press leg died"; tail -3 "$run/leg-nat-press.log"; fail=1; }
+		> "$input/leg-nat-press.log" 2>&1 || { echo "native press leg died"; tail -3 "$input/leg-nat-press.log"; fail=1; }
+	nat_log_ok "$input/leg-nat-press.log" || { echo "native press leg ran without its firmware (see log)"; fail=1; }
 	timeout 590 "$runwbx" "$wbx" \
 		--mcpx "$fw/MCPX Boot ROM/mcpx_1.0.bin" \
 		--bios "$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
-		--eeprom "$run/eeprom-master.bin" \
+		--eeprom "$shared/eeprom-master.bin" \
 		--hdd "$fw/Hard Disk/xbox_hdd.qcow2" \
 		--dvd "$XBOX_DVD_PATH" \
 		--press "$press" \
-		--frames "$frames" --state-out "$run/state-wbx-press.bin" \
-		> "$run/leg-wbx-press.log" 2>&1 || { echo "sandbox press leg died"; tail -3 "$run/leg-wbx-press.log"; fail=1; }
-	if [ ! -s "$run/state-nat-press.bin" ] || [ ! -s "$run/state-wbx-press.bin" ]; then
-		echo "FAIL: a press run wrote no machine state"; fail=1
-	elif cmp -s "$run/state-nat-press.bin" "$run/state-nat-A.bin"; then
+		--frames "$frames" --state-out "$input/state-wbx-press.bin" \
+		> "$input/leg-wbx-press.log" 2>&1 || { echo "sandbox press leg died"; tail -3 "$input/leg-wbx-press.log"; fail=1; }
+	# state-nat-A.bin is the base leg's baseline (this run, not a leftover -
+	# the base leg above always runs first and always wipes its own
+	# directory), used here to prove the press changed the machine at all.
+	if [ ! -s "$base/state-nat-A.bin" ] || [ ! -s "$input/state-nat-press.bin" ] || [ ! -s "$input/state-wbx-press.bin" ]; then
+		echo "FAIL: a press run (or its baseline) wrote no machine state"; fail=1
+	elif cmp -s "$input/state-nat-press.bin" "$base/state-nat-A.bin"; then
 		echo "FAIL: the press left no trace in the machine"; fail=1
-	elif cmp -s "$run/state-nat-press.bin" "$run/state-wbx-press.bin"; then
+	elif cmp -s "$input/state-nat-press.bin" "$input/state-wbx-press.bin"; then
 		echo "PASS: input leg - the press reached the machine, native == sandbox"
 	else
 		echo "FAIL: native and sandbox disagree under input"; fail=1
@@ -207,27 +251,31 @@ fi
 # with one driver, which is exactly what this leg pins down. Runs at 600
 # frames; the boot animation is fully rendered by then.
 if [ -n "${XBOX_GPU:-}" ]; then
+	gpu=$(leg_dir gpu)
 	for i in A B; do
 		XEMU_BASE_PATH="$run" CHIMERA_FRAMES=600 CHIMERA_GPU=1 \
-			CHIMERA_STATE_OUT="$run/state-gpu-nat-$i.bin" \
+			CHIMERA_STATE_OUT="$gpu/state-gpu-nat-$i.bin" \
 			timeout 590 "$nat" -config_path "$run/xemu.toml" $QEMU_ARGS \
-			> "$run/leg-gpu-nat-$i.log" 2>&1 || { echo "gpu native leg $i died"; tail -3 "$run/leg-gpu-nat-$i.log"; fail=1; }
+			> "$gpu/leg-gpu-nat-$i.log" 2>&1 || { echo "gpu native leg $i died"; tail -3 "$gpu/leg-gpu-nat-$i.log"; fail=1; }
+		nat_log_ok "$gpu/leg-gpu-nat-$i.log" || { echo "gpu native leg $i ran without its firmware (see log)"; fail=1; }
 	done
 	CHIMERA_GPU=1 timeout 590 "$runwbx" "$wbx" \
 		--mcpx "$fw/MCPX Boot ROM/mcpx_1.0.bin" \
 		--bios "$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
-		--eeprom "$run/eeprom-master.bin" \
+		--eeprom "$shared/eeprom-master.bin" \
 		--hdd "$fw/Hard Disk/xbox_hdd.qcow2" \
 		${XBOX_DVD_PATH:+--dvd "$XBOX_DVD_PATH"} \
-		--frames 600 --state-out "$run/state-gpu-wbx.bin" \
-		> "$run/leg-gpu-wbx.log" 2>&1 || { echo "gpu sandbox leg died"; tail -3 "$run/leg-gpu-wbx.log"; fail=1; }
-	if [ ! -s "$run/state-gpu-nat-A.bin" ] || [ ! -s "$run/state-gpu-wbx.bin" ]; then
-		echo "FAIL: gpu leg - a run wrote no machine state"; fail=1
-	elif ! cmp -s "$run/state-gpu-nat-A.bin" "$run/state-gpu-nat-B.bin"; then
+		--frames 600 --state-out "$gpu/state-gpu-wbx.bin" \
+		> "$gpu/leg-gpu-wbx.log" 2>&1 || { echo "gpu sandbox leg died"; tail -3 "$gpu/leg-gpu-wbx.log"; fail=1; }
+	# state-nat-A.bin is the base leg's baseline (this run, not a leftover),
+	# used here to prove the GPU actually left a trace in machine state.
+	if [ ! -s "$gpu/state-gpu-nat-A.bin" ] || [ ! -s "$gpu/state-gpu-wbx.bin" ] || [ ! -s "$base/state-nat-A.bin" ]; then
+		echo "FAIL: gpu leg - a run (or the base leg's baseline) wrote no machine state"; fail=1
+	elif ! cmp -s "$gpu/state-gpu-nat-A.bin" "$gpu/state-gpu-nat-B.bin"; then
 		echo "FAIL: gpu leg - native runs differ"; fail=1
-	elif ! cmp -s "$run/state-gpu-nat-A.bin" "$run/state-gpu-wbx.bin"; then
+	elif ! cmp -s "$gpu/state-gpu-nat-A.bin" "$gpu/state-gpu-wbx.bin"; then
 		echo "FAIL: gpu leg - native and sandbox differ"; fail=1
-	elif cmp -s "$run/state-gpu-nat-A.bin" "$run/state-nat-A.bin"; then
+	elif cmp -s "$gpu/state-gpu-nat-A.bin" "$base/state-nat-A.bin"; then
 		echo "FAIL: gpu leg - the GPU left no trace (did it draw at all?)"; fail=1
 	else
 		echo "PASS: gpu leg - the GPU drew, native == sandbox on this driver"

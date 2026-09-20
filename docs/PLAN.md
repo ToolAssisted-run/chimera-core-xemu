@@ -453,6 +453,21 @@ for N frames twice from pristine copies and compares the full migration
 stream byte for byte. PASS at 60 and 300 frames (5 virtual seconds,
 ~8MB of state).
 
+Not the same claim as `run-gate.sh`'s own native-vs-native leg (which shares
+one EEPROM across A and B rather than copying it, since that leg is also
+proving native == sandbox against that same shared file). 2026-09-20, while
+proving the mode B fix below: `run-gate.sh 600` (real firmware) diverged once
+- `FAIL: native runs differ`, byte 5322684 of a ~10.8MB state - then PASSed
+twice more on immediate retry with the identical script and a fresh
+directory, and the original (unfixed) script also PASSed on its one 600-frame
+run. Ruled out: EEPROM mutation (a single 600-frame native run leaves
+`eeprom-master.bin` byte-identical, checked directly). Not ruled out: this
+looks like a rare, pre-existing native/native flake at a frame count
+`run-determinism-native.sh` has never been run at (60 and 300 only, above),
+unrelated to the mode B directory fix - it reproduced under both the fixed
+and the unfixed script and did not reproduce on retry either way. Flagging
+for whoever next touches determinism; not chased further here.
+
 What it took - each of these was found by an actual diverging byte, in
 order, and lives in patches/ + waterbox/:
 
@@ -566,12 +581,16 @@ SKIP: gpu leg ...
 ```
 
 Four legs red and one PASS that is not a real one: two native runs that both
-failed to boot are still identical to each other. Two things fall out of that
-run, and neither is fixed here:
+failed to boot are still identical to each other. Two things fell out of that
+run:
 
 - **The native reference does not mind a missing boot ROM.** The sandbox said
   "mount mcpx: cannot open the file to mount"; the native flavor said nothing
-  at all and ran. Absent reading as fine, which is gates.md mode C.
+  at all and ran. Absent reading as fine, which is gates.md mode C. FIXED
+  2026-09-20: `run-gate.sh` now greps every native leg's log for xemu's own
+  "Failed to open BootROM/flash/hard disk" line and fails the leg loudly when
+  it is there, instead of trusting an exit code xemu hands back as 0 either
+  way.
 - **`build/gate` is never cleared, so a leg whose run DIES compares the
   previous run's files and passes.** Same command, same missing firmware, the
   only difference being a `build/gate` left over from a good run: the
@@ -579,13 +598,18 @@ run, and neither is fixed here:
   changes nothing` while all three of its sandbox runs had just died. On a
   cleared directory the same leg says `FAIL: a 60-frame sandbox run wrote no
   machine state`. That is gates.md mode B, in the one script whose job is to
-  not do that. It is not fixed in this commit because the obvious fix -
-  `rm -rf "$run"` at the top - would also throw away `eeprom-master.bin`,
-  which the script mints once ON PURPOSE because it is per-project persistent
-  data, so the fix is a decision about what the run dir is for rather than a
-  one-line tidy. Until it is made: **clear `build/gate` (keeping
-  `eeprom-master.bin`) before any gate run whose result you intend to write
-  down.**
+  not do that. FIXED 2026-09-20, structurally rather than by adding a clear
+  step someone can forget to run: every leg now gets its own subdirectory
+  under `build/gate` (`base/`, `savestate/`, `input/`, `gpu/`), wiped and
+  recreated the instant that leg starts, so no leg can ever compare against
+  another leg's or another run's leftover output. `eeprom-master.bin` moved
+  to `build/gate/shared/`, its own directory that no leg-wipe ever touches,
+  because it is minted once on purpose and is per-project persistent data,
+  not a leg's output. Reproduced before the fix (dirty `build/gate`, no
+  firmware): the savestate leg PASSed while all three of its sandbox runs had
+  just died, exactly as above. Same conditions after the fix: `FAIL: a
+  60-frame sandbox run wrote no machine state` - the false PASS is gone, and
+  manually clearing `build/gate` before a run is no longer necessary.
 
 That is different from rpcs3, whose blocker IS cost, and whose first four legs
 need no content at all. Do not read xemu's gap as the same problem.
@@ -625,8 +649,7 @@ does at all.
 Full local run:
 
 ```
-# stale artifacts pass legs that died - see the mode B note above
-find build/gate -mindepth 1 ! -name eeprom-master.bin -delete
+# no manual clearing needed any more - see the mode B note above
 XBOX_FW_DIR="$HOME/xbox-roms/Xbox BIOS" XBOX_DVD_PATH=/path/to/game.iso XBOX_GPU=1 \
   MINIBOX_DIR=~/chimera/extern/chimera-common-minibox waterbox/run-gate.sh 1200
 XBOX_FW_DIR="$HOME/xbox-roms/Xbox BIOS" XBOX_DVD_PATH=/path/to/game.iso \
