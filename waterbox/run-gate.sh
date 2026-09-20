@@ -94,7 +94,13 @@ for i in A B; do
 		timeout 590 "$nat" -config_path "$run/xemu.toml" $QEMU_ARGS \
 		> "$run/leg-nat-$i.log" 2>&1 || { echo "native leg $i died"; tail -3 "$run/leg-nat-$i.log"; fail=1; }
 done
-if cmp -s "$run/state-nat-A.bin" "$run/state-nat-B.bin"; then
+# -s before cmp, on every leg below as well: two EMPTY state files compare
+# equal, so a machine that stopped serialising its state would have read as
+# "native deterministic" and then as "native == sandbox" - two passes on
+# nothing at all.
+if [ ! -s "$run/state-nat-A.bin" ] || [ ! -s "$run/state-nat-B.bin" ]; then
+	echo "FAIL: a native run wrote no machine state"; fail=1
+elif cmp -s "$run/state-nat-A.bin" "$run/state-nat-B.bin"; then
 	echo "PASS: native deterministic at $frames frames"
 else
 	echo "FAIL: native runs differ"; fail=1
@@ -109,7 +115,9 @@ timeout 590 "$runwbx" "$wbx" \
 	--frames "$frames" --state-out "$run/state-wbx.bin" \
 	--audio-out "$run/audio-wbx.s16" \
 	> "$run/leg-wbx.log" 2>&1 || { echo "sandbox leg died"; tail -3 "$run/leg-wbx.log"; fail=1; }
-if cmp -s "$run/state-nat-A.bin" "$run/state-wbx.bin"; then
+if [ ! -s "$run/state-wbx.bin" ]; then
+	echo "FAIL: the sandbox run wrote no machine state"; fail=1
+elif cmp -s "$run/state-nat-A.bin" "$run/state-wbx.bin"; then
 	echo "PASS: native == sandbox at $frames frames ($(stat -c%s "$run/state-wbx.bin") bytes of state)"
 else
 	echo "FAIL: native and sandbox states differ"; fail=1
@@ -118,7 +126,13 @@ fi
 # The audio leg: the APU monitor's sample stream is machine output; the two
 # native runs and the sandbox must produce the same bytes, and a boot that
 # reached the dashboard jingle must produce actual sound.
-if ! cmp -s "$run/audio-nat-A.s16" "$run/audio-nat-B.s16"; then
+if [ ! -s "$run/audio-nat-A.s16" ] || [ ! -s "$run/audio-wbx.s16" ]; then
+	# an APU that stopped handing its monitor's samples over produces two empty
+	# files, and two empty files are byte-identical: the leg below would have
+	# congratulated a core that made no sound at all, which is exactly how
+	# flycast shipped silent for its whole life
+	echo "FAIL: a run produced no audio samples at all"; fail=1
+elif ! cmp -s "$run/audio-nat-A.s16" "$run/audio-nat-B.s16"; then
 	echo "FAIL: native audio streams differ"; fail=1
 elif ! cmp -s "$run/audio-nat-A.s16" "$run/audio-wbx.s16"; then
 	echo "FAIL: native and sandbox audio differ"; fail=1
@@ -126,6 +140,11 @@ elif [ "$frames" -ge 600 ] && ! LC_ALL=C grep -qm1 "[^\\x00]" "$run/audio-nat-A.
 	echo "FAIL: audio is pure silence"; fail=1
 else
 	echo "PASS: audio leg - $(stat -c%s "$run/audio-wbx.s16") bytes, native == sandbox"
+	# the samples are equal and there are some, but WHETHER THEY ARE SOUND is
+	# only asked past 600 frames: before the dashboard jingle the machine is
+	# silent by design, so the question has no honest answer yet. Said out loud,
+	# because the default run is 60 and a silent line reads as a green one.
+	[ "$frames" -ge 600 ] || echo "SKIP: audio is sound - needs 600+ frames to reach the dashboard jingle (waterbox/run-gate.sh 600); at $frames silence is correct"
 fi
 
 # The savestate leg: 60 sandbox frames with the arena saved and reloaded
@@ -141,7 +160,9 @@ for mode in plain rr; do
 		$extra --frames 60 --state-out "$run/state-wbx-$mode-60.bin" \
 		> "$run/leg-wbx-$mode-60.log" 2>&1 || { echo "sandbox $mode-60 leg died"; tail -3 "$run/leg-wbx-$mode-60.log"; fail=1; }
 done
-if cmp -s "$run/state-wbx-plain-60.bin" "$run/state-wbx-rr-60.bin"; then
+if [ ! -s "$run/state-wbx-plain-60.bin" ] || [ ! -s "$run/state-wbx-rr-60.bin" ]; then
+	echo "FAIL: a 60-frame sandbox run wrote no machine state"; fail=1
+elif cmp -s "$run/state-wbx-plain-60.bin" "$run/state-wbx-rr-60.bin"; then
 	echo "PASS: savestate leg - save+load around every frame changes nothing"
 else
 	echo "FAIL: savestate round-trip diverges"; fail=1
@@ -166,13 +187,17 @@ if [ -n "${XBOX_DVD_PATH:-}" ] && [ "$frames" -ge 1200 ]; then
 		--press "$press" \
 		--frames "$frames" --state-out "$run/state-wbx-press.bin" \
 		> "$run/leg-wbx-press.log" 2>&1 || { echo "sandbox press leg died"; tail -3 "$run/leg-wbx-press.log"; fail=1; }
-	if cmp -s "$run/state-nat-press.bin" "$run/state-nat-A.bin"; then
+	if [ ! -s "$run/state-nat-press.bin" ] || [ ! -s "$run/state-wbx-press.bin" ]; then
+		echo "FAIL: a press run wrote no machine state"; fail=1
+	elif cmp -s "$run/state-nat-press.bin" "$run/state-nat-A.bin"; then
 		echo "FAIL: the press left no trace in the machine"; fail=1
 	elif cmp -s "$run/state-nat-press.bin" "$run/state-wbx-press.bin"; then
 		echo "PASS: input leg - the press reached the machine, native == sandbox"
 	else
 		echo "FAIL: native and sandbox disagree under input"; fail=1
 	fi
+else
+	echo "SKIP: input leg - needs XBOX_DVD_PATH and 1200+ frames (a booted game first polls the pad around frame 974; the dashboard never starts USB at all)"
 fi
 
 # The GPU leg (XBOX_GPU=1): the same machine with the GL renderer drawing
@@ -196,7 +221,9 @@ if [ -n "${XBOX_GPU:-}" ]; then
 		${XBOX_DVD_PATH:+--dvd "$XBOX_DVD_PATH"} \
 		--frames 600 --state-out "$run/state-gpu-wbx.bin" \
 		> "$run/leg-gpu-wbx.log" 2>&1 || { echo "gpu sandbox leg died"; tail -3 "$run/leg-gpu-wbx.log"; fail=1; }
-	if ! cmp -s "$run/state-gpu-nat-A.bin" "$run/state-gpu-nat-B.bin"; then
+	if [ ! -s "$run/state-gpu-nat-A.bin" ] || [ ! -s "$run/state-gpu-wbx.bin" ]; then
+		echo "FAIL: gpu leg - a run wrote no machine state"; fail=1
+	elif ! cmp -s "$run/state-gpu-nat-A.bin" "$run/state-gpu-nat-B.bin"; then
 		echo "FAIL: gpu leg - native runs differ"; fail=1
 	elif ! cmp -s "$run/state-gpu-nat-A.bin" "$run/state-gpu-wbx.bin"; then
 		echo "FAIL: gpu leg - native and sandbox differ"; fail=1
@@ -205,6 +232,8 @@ if [ -n "${XBOX_GPU:-}" ]; then
 	else
 		echo "PASS: gpu leg - the GPU drew, native == sandbox on this driver"
 	fi
+else
+	echo "SKIP: gpu leg - set XBOX_GPU=1 to render through a real driver (EGL surfaceless natively, the bridge in the sandbox) and hold the two byte-equal at 600 frames"
 fi
 
 exit $fail
