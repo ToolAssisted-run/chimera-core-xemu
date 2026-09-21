@@ -574,9 +574,9 @@ static void run_frames(long frames)
      * a 12-byte header (w, h, 0) - the native half of a picture compare */
     const char *video_path = getenv("CHIMERA_VIDEO_OUT");
     if (video_path && g_config.display.renderer == CONFIG_DISPLAY_RENDERER_OPENGL) {
-        static uint8_t pix[1920 * 1080 * 4];
+        static uint8_t pix[1920 * 1440 * 4];
         int w = 0, h = 0;
-        if (nv2a_chimera_read_display(pix, 1920, 1080, &w, &h)) {
+        if (nv2a_chimera_read_display(pix, 1920, 1440, &w, &h)) {
             FILE *f = fopen(video_path, "wb");
             if (f) {
                 uint32_t hdr[3] = { (uint32_t)w, (uint32_t)h, 0 };
@@ -690,6 +690,32 @@ ECL_EXPORT int Init(void)
 
     g_config.general.show_welcome = false;
     chimera_choose_renderer(chimera_gl_available());
+
+    /* How large the GPU draws every surface, as the `internalResolution`
+     * setting: xemu's own display.quality.surface_scale, read by the GL
+     * renderer when it creates its surfaces (pgraph/gl/surface.c,
+     * pgraph_gl_reload_surface_scale_factor). It is PART OF THE MACHINE, and
+     * that is measured rather than presumed: the Xbox is UMA, every surface
+     * the GPU finishes is downloaded into the console's RAM, and a scaled
+     * surface is shrunk on the way by taking every Nth pixel
+     * (surface_copy_shrink_row) - not the bytes a 1x render puts there. On
+     * Prince of Persia, 600 frames, 2x against 1x differs in 1,571,601 bytes
+     * of RAM while two 1x runs are byte-identical. So a project pins it and
+     * a movie replays only at the value it was recorded with; the setting's
+     * declaration says so. Under the null renderer nothing is drawn and the
+     * value changes nothing. */
+    {
+        static const char *const scales[] = { "1x", "2x", "3x" };
+        char scale[8];
+        strncpy(scale, scales[0], sizeof(scale) - 1);
+        scale[sizeof(scale) - 1] = '\0';
+        wbx_setting_str("internalResolution", scale, sizeof scale);
+        int factor = 1;
+        for (size_t i = 0; i < sizeof(scales) / sizeof(scales[0]); i++)
+            if (strcmp(scale, scales[i]) == 0)
+                factor = (int)i + 1;
+        g_config.display.quality.surface_scale = factor;
+    }
     g_config.audio.use_dsp_jit = false;
     g_config.sys.mem_limit = (int)wbx_setting_double("memLimit128", 0)
         ? CONFIG_SYS_MEM_LIMIT_128 : CONFIG_SYS_MEM_LIMIT_64;
@@ -852,8 +878,12 @@ ECL_EXPORT int GetAudioSampleCount(void)
  */
 #include "ui/surface.h"
 
+/* buffer CAPACITY, matching waterbox.config's video.width/height: 3x of the
+ * machine's common 640x480 mode is 1920x1440. A presented frame larger than
+ * this (a 720p mode upscaled) does not fit and GetVideoBgra falls back to the
+ * VGA view of RAM below, which is the machine's own-size picture. */
 #define CHIMERA_MAX_W 1920
-#define CHIMERA_MAX_H 1080
+#define CHIMERA_MAX_H 1440
 static uint32_t g_video[CHIMERA_MAX_W * CHIMERA_MAX_H];
 static int g_videoWidth = 640, g_videoHeight = 480;
 

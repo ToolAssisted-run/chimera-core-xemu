@@ -533,6 +533,76 @@ startup, which looks exactly like a new deadlock.
   and owns main(); the port replaces that layer entirely.
 - Rust in QEMU 10.2 is optional and stays off.
 
+## Internal resolution is a machine setting, and it is declared as one (2026-09-21)
+
+Chimera issue #122 asked for xemu's Internal Resolution and Aspect Ratio as
+project settings, and asked the right question: if a scaled render writes
+different bytes to Xbox RAM, can a TAS still be reproduced when the value is
+held constant? The answer is yes, and it was measured before it was declared.
+
+**The measurement.** Native reference, Prince of Persia The Sands of Time, the
+GL renderer on this machine's llvmpipe, `CHIMERA_RAM_OUT` and the migration
+stream, 600 frames:
+
+| run | surface_scale | RAM (64 MB) md5 | state md5 |
+| --- | --- | --- | --- |
+| A | 1 | 6aa4fc596690 | a813ec0a65d4 |
+| B | 1 | 6aa4fc596690 | a813ec0a65d4 |
+| C | 2 | c61d7eb41350 | 2f568e06659b |
+
+A and B are byte-identical (the instrument against itself first, docs/gates.md
+H). C differs from A in 1,571,601 bytes of RAM. That is the corner
+decimation `surface_copy_shrink_row` does when a scaled surface is downloaded
+into the UMA (docs/graphics-settings.md in chimera had read the code and said
+so; this is the number). The sandbox agrees: `run-wbx --settings` with
+`{"internalResolution":"2x"}` gives 2f568e06659b, 3x gives f263f14fbabe, and
+the same 1,571,601-byte difference between 1x and 2x.
+
+So it is (C) under Sergio's rule: an internal core setting, applied by the
+core's own implementation (`g_config.display.quality.surface_scale`, read by
+`pgraph_gl_reload_surface_scale_factor` when the renderer creates its
+surfaces), pinned by the project and cited by the movie, and its declaration
+says in as many words that a movie recorded at one value needs the same value
+to play back. That is exactly what the reporter proposed ("if I choose 2x it
+will always be 2x for this project"), and it is fine: a constant is
+reproducible. What is NOT fine is changing it on an existing project, which
+is a structural edit like any other setting - the greenzone goes, the inputs
+stay, and on this core they may no longer sync.
+
+**Aspect Ratio is not a core setting here.** xemu's `display.ui.aspect_ratio`
+is consumed by `ui/xui/gl-helpers.cc` (the window blit) and by nothing under
+`hw/`; the headless build compiles no `ui/xui` at all (zero entries in the
+guest's compile_commands.json), so in this core the value is inert. The
+frontend's Display configuration already chooses the aspect ratio (the
+system's 640x480, a custom ratio, a custom size, 1:1), which is the same job.
+Not declared.
+
+**What changed.**
+
+- `internalResolution` (1x / 2x / 3x) in waterbox.config and Init.
+- The declared frame and `CHIMERA_MAX_H` grew from 1920x1080 to 1920x1440, so
+  3x of the common 640x480 mode reaches the frontend. A presented frame larger
+  than the buffer (a 720p mode at 2x) falls back to the VGA view of RAM, the
+  machine's own-size picture - said in the config's comment.
+- `run-wbx --settings F` mounts a settings JSON the way the frontend does,
+  which is what lets a leg drive a setting at all.
+- The `gpu:internalResolution` leg (XBOX_GPU=1 + XBOX_DVD_PATH): 1200 frames
+  at 1x, 2x and 3x must be three different machines and three pictures of
+  640x480, 1280x960 and 1920x1440; and 2x under the NULL renderer must leave
+  the base leg's machine byte for byte, which protects the deterministic
+  machine from the setting. 1200 and not 600: at 600 the game is still loading,
+  no surface is bound to the scanout, and GetVideoBgra falls back to the RAM
+  view at 640x480 whatever the scale (measured: 2x at 600 frames read back
+  640x480, at 1200 frames 1280x960). Negative control: with the assignment in
+  Init removed, 2x at 600 frames produced the 1x state a813ec0a65d4.
+
+**A trap met on the way.** `waterbox/xemu-waterbox.c` is COPIED into
+`extern/xemu/ui/` by `apply-patches.sh`, and the build compiles the copy. An
+edit to the source under waterbox/ followed by `ninja` builds the old driver,
+and the first three sandbox runs at 1x / 2x / 3x came out byte-identical for
+that reason - which looked exactly like a setting that never reached the core.
+Copy, then build.
+
 ## The frame-0 anchor was the one state nobody had loaded (2026-09-21)
 
 Chimera issue #126 was reported and fixed on PCSX2: a bridged core stores the
@@ -708,6 +778,7 @@ since 2026-09-21 - CI runs none.
 | savestate round-trip | run-gate.sh | no | mcpx + bios + hdd |
 | input (START on pad 1 reaches the machine) | run-gate.sh | no | + a disc, 1200+ frames |
 | gpu (a real driver draws, native == sandbox) | run-gate.sh | no | + a disc, `XBOX_GPU=1`, an EGL context |
+| gpu:internalResolution (2x and 3x are different machines and bigger pictures; nothing under the null renderer) | run-gate.sh | no | + a disc, `XBOX_GPU=1`, 1200 frames |
 | gl:rebuild-at-zero (the frame-0 anchor restores and rebuilds) | run-gate.sh | no | + a disc, chimera-run and an installed package (`CHIMERA_ROOT`) |
 | boot:frontend | tests/run-frontend.sh | no | mcpx + bios + hdd + a disc |
 | gpu:frontend | tests/run-frontend.sh | no | the same |

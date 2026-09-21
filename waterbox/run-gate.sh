@@ -320,6 +320,68 @@ else
 	echo "SKIP: gpu leg - set XBOX_GPU=1 to render through a real driver (EGL surfaceless natively, the bridge in the sandbox) and hold the two byte-equal at 600 frames"
 fi
 
+# The gpu:internalResolution leg (chimera issue 122): the `internalResolution`
+# setting reaches the renderer, and it is PART OF THE MACHINE. On an Xbox
+# every surface the GPU finishes is downloaded into the console's RAM, and a
+# scaled surface is shrunk on the way by taking every Nth pixel - not the bytes
+# a 1x render puts there. So the same 1200 frames at 2x must leave a DIFFERENT
+# machine state from 1x, and a different one again at 3x, while the picture
+# comes out at 1280x960 and 1920x1440. A setting that never reached the core
+# would produce the 1x state and the 1x picture, which is what this leg turns
+# red on (watched: with the assignment in Init removed, the 2x state was
+# byte-equal to the 1x one). Measured natively first: Prince of Persia, 600
+# frames, 2x against 1x differs in 1,571,601 bytes of RAM while two 1x runs are
+# byte-identical.
+#
+# 1200 frames and not the gpu leg's 600: at 600 the game is still loading and
+# no surface is bound to the scanout, so GetVideoBgra falls back to the VGA
+# view of RAM (640x480 whatever the scale) and the size half could not be
+# asserted. At 1200 the game has drawn its first frames.
+#
+# The last run is the control: under the null renderer nothing is drawn, so 2x
+# must change NOTHING - the base leg's sandbox state, byte for byte. That is
+# the half that protects the deterministic machine from the setting.
+if [ -n "${XBOX_GPU:-}" ] && [ -n "${XBOX_DVD_PATH:-}" ]; then
+	res=$(leg_dir resolution)
+	for scale in 1x 2x 3x; do
+		printf '{"internalResolution":"%s"}' "$scale" > "$res/settings-$scale.json"
+		CHIMERA_GPU=1 timeout 900 "$runwbx" "$wbx" \
+			--mcpx "$fw/MCPX Boot ROM/mcpx_1.0.bin" \
+			--bios "$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
+			--eeprom "$shared/eeprom-master.bin" \
+			--hdd "$fw/Hard Disk/xbox_hdd.qcow2" \
+			--dvd "$XBOX_DVD_PATH" --settings "$res/settings-$scale.json" \
+			--frames 1200 --state-out "$res/state-$scale.bin" --video-out "$res/video-$scale.bin" \
+			> "$res/leg-$scale.log" 2>&1 || { echo "gpu:internalResolution $scale run died"; tail -3 "$res/leg-$scale.log"; fail=1; }
+	done
+	printf '{"internalResolution":"2x"}' > "$res/settings-null.json"
+	timeout 590 "$runwbx" "$wbx" \
+		--mcpx "$fw/MCPX Boot ROM/mcpx_1.0.bin" \
+		--bios "$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
+		--eeprom "$shared/eeprom-master.bin" \
+		--hdd "$fw/Hard Disk/xbox_hdd.qcow2" \
+		--dvd "$XBOX_DVD_PATH" --settings "$res/settings-null.json" \
+		--frames "$frames" --state-out "$res/state-null-2x.bin" \
+		> "$res/leg-null-2x.log" 2>&1 || { echo "gpu:internalResolution null-renderer control died"; tail -3 "$res/leg-null-2x.log"; fail=1; }
+	# run-wbx says the picture's size on stderr as it writes it
+	video_size() { sed -n 's/^run-wbx: video \([0-9]*x[0-9]*\) written.*/\1/p' "$1" | head -1; }
+	if [ ! -s "$res/state-1x.bin" ] || [ ! -s "$res/state-2x.bin" ] || [ ! -s "$res/state-3x.bin" ]; then
+		echo "FAIL: gpu:internalResolution leg - a run wrote no machine state"; fail=1
+	elif cmp -s "$res/state-1x.bin" "$res/state-2x.bin"; then
+		echo "FAIL: gpu:internalResolution leg - 2x left the same machine as 1x: the setting never reached the renderer"; fail=1
+	elif cmp -s "$res/state-2x.bin" "$res/state-3x.bin"; then
+		echo "FAIL: gpu:internalResolution leg - 3x left the same machine as 2x"; fail=1
+	elif [ "$(video_size "$res/leg-1x.log")" != "640x480" ] || [ "$(video_size "$res/leg-2x.log")" != "1280x960" ] || [ "$(video_size "$res/leg-3x.log")" != "1920x1440" ]; then
+		echo "FAIL: gpu:internalResolution leg - the picture came out $(video_size "$res/leg-1x.log") / $(video_size "$res/leg-2x.log") / $(video_size "$res/leg-3x.log") at 1x / 2x / 3x, wanted 640x480 / 1280x960 / 1920x1440"; fail=1
+	elif [ ! -s "$base/state-wbx.bin" ] || ! cmp -s "$base/state-wbx.bin" "$res/state-null-2x.bin"; then
+		echo "FAIL: gpu:internalResolution leg - 2x changed the machine under the NULL renderer, where nothing is drawn"; fail=1
+	else
+		echo "PASS: gpu:internalResolution leg - 2x and 3x each leave a different machine from 1x and draw 1280x960 and 1920x1440; under the null renderer 2x changes nothing"
+	fi
+else
+	echo "SKIP: gpu:internalResolution leg - needs XBOX_GPU=1 and XBOX_DVD_PATH: would prove the setting reaches the renderer and that a scaled render is a different machine"
+fi
+
 # The gl:rebuild-at-zero leg (chimera issue 126): the greenzone's FRAME-0
 # ANCHOR is a state like no other, and it has to restore like any other.
 #

@@ -119,6 +119,7 @@ int main(int argc, char **argv)
 {
     const char *wbx = 0, *mcpx = 0, *bios = 0, *eeprom = 0, *hdd = 0, *dvd = 0;
     const char *stateOut = 0;
+    const char *settings = 0; /* a JSON file mounted as the core's "settings" */
     const char *videoOut = 0;
     const char *ramOut = 0;
     long ramBytes = 1048576;
@@ -136,6 +137,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--dvd") && i + 1 < argc) dvd = argv[++i];
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = strtol(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--state-out") && i + 1 < argc) stateOut = argv[++i];
+        else if (!strcmp(argv[i], "--settings") && i + 1 < argc) settings = argv[++i];
         else if (!strcmp(argv[i], "--video-out") && i + 1 < argc) videoOut = argv[++i];
         else if (!strcmp(argv[i], "--ram-out") && i + 1 < argc) ramOut = argv[++i];
         else if (!strcmp(argv[i], "--ram-bytes") && i + 1 < argc) ramBytes = strtol(argv[++i], 0, 0);
@@ -152,7 +154,7 @@ int main(int argc, char **argv)
     }
     if (!wbx || !mcpx || !bios || !eeprom || !hdd) {
         fprintf(stderr, "usage: run-wbx <core.wbx> --mcpx F --bios F "
-                "--eeprom F --hdd F [--dvd F] [--frames N] [--state-out F]\n");
+                "--eeprom F --hdd F [--dvd F] [--settings F] [--frames N] [--state-out F]\n");
         return 2;
     }
 
@@ -182,6 +184,13 @@ int main(int argc, char **argv)
     mount_path(h, "hdd", hdd);
     if (dvd) {
         mount_path(h, "dvd", dvd);
+    }
+    /* The project's settings, the way the frontend mounts them: a flat JSON
+     * object the guest reads through waterbox_settings.h. Without one every
+     * setting is at its declared default, which is what every leg before the
+     * internalResolution one ran with. */
+    if (settings) {
+        mount_path(h, "settings", settings);
     }
 
     wbx_activate_host(h, &r);
