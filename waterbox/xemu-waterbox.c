@@ -643,12 +643,38 @@ ECL_EXPORT const char *GetLoadError(void)
  * describes the machine that was just REPLACED - the TranslationBlocks it
  * holds, the jump caches and page lists that point into it. Everything of it
  * goes, and the machine translates afresh from the memory it was given, as it
- * did the first time. The flush wants the machine stopped, which between
- * frames it is. */
+ * did the first time. The flush wants the machine stopped, and between frames
+ * it is - but the RUNSTATE is guest memory like everything else, so what it
+ * says after a load is whatever the loaded state said, which need not be the
+ * truth. Every state taken at a frame boundary says paused, because
+ * run_one_frame stops the machine there. One state in a session does not: the
+ * greenzone's frame-0 anchor, taken right after Init, where qemu_init has
+ * started the machine and no frame has stopped it yet. Loading that one used
+ * to abort the core inside the flush below on its own precondition
+ * ("!runstate_is_running() || cpu_in_serial_context") - so a movie played from
+ * frame 0 or 1 in TAStudio, which is exactly what reaches the anchor, killed
+ * the machine. The machine really is stopped here; say so before the flush,
+ * and the runstate agrees with reality for every load rather than for all but
+ * one.
+ *
+ * The GL renderer is told too, and for the opposite reason: what it keeps is
+ * not derived from guest memory but from a context OUTSIDE it, and the id it
+ * stored beside its objects has just been overwritten by whatever the loaded
+ * state held. A state taken before that id was ever written holds zero, which
+ * reads as "nothing to rebuild" and is the one state in a session for which
+ * that is wrong (chimera issue 126; see pgraph/gl/renderer.c). This is set
+ * AFTER the load, so the load cannot wipe it. */
 #include "exec/tb-flush.h"
+/* declared rather than included: hw/xbox/nv2a/pgraph/gl/renderer.h pulls in
+ * nv2a_int.h and from there cpu.h, which is not on this file's include path */
+void pgraph_gl_state_loaded(void);
 ECL_EXPORT void StateLoaded(void)
 {
+    if (runstate_is_running()) {
+        vm_stop(RUN_STATE_PAUSED);
+    }
     tb_flush__exclusive_or_serial();
+    pgraph_gl_state_loaded();
 }
 
 ECL_EXPORT int Init(void)

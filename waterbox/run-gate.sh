@@ -284,4 +284,86 @@ else
 	echo "SKIP: gpu leg - set XBOX_GPU=1 to render through a real driver (EGL surfaceless natively, the bridge in the sandbox) and hold the two byte-equal at 600 frames"
 fi
 
+# The gl:rebuild-at-zero leg (chimera issue 126): the greenzone's FRAME-0
+# ANCHOR is a state like no other, and it has to restore like any other.
+#
+# It is taken right after Init and before the first frame advance - so it is
+# the only state in a session made while the machine had never stopped at a
+# frame boundary, and the only one made before the GL renderer ever looked at
+# which context its objects came from. TAStudio reaches a frame by loading the
+# state BEFORE it and emulating one forward, so frames 0 and 1 both load that
+# anchor: whatever is wrong with it reaches a person playing their movie from
+# the beginning.
+#
+# Two things could be. StateLoaded's tb_flush asserts on
+# "!runstate_is_running()", and the anchor is the one state that comes back
+# saying RUNNING - so loading it ABORTED the core. And the GL check reads a
+# stored context id of 0 as "nothing to rebuild", which would be wrong for that
+# same state - the bug PCSX2 had; this core happens to write the id during Init
+# at nv2a_reset's pfifo drain, so it never had that hole (docs/PLAN.md).
+#
+# What it measures: the core must survive a restore to the anchor, and the
+# renderer must rebuild after it - a rebuild is hundreds of bridge calls and
+# says so on stderr, while an idle frame of this machine is one call. A restore
+# to frame 2, an ordinary state, must do the same: it is the DIFFERENCE between
+# the two that a bug of this family shows up as.
+#
+# WHAT IT DOES NOT STAND IN FOR (docs/gates.md, E): llvmpipe is not a driver,
+# and a rebuild that RUNS is not a picture that is right. It needs a disc and
+# the firmware, so on a public runner it SKIPs - docs/PLAN.md, "What CI runs".
+crunroot=""
+for c in "${CHIMERA_ROOT:-}" "$root/../chimera" "$HOME/chimera"; do
+	if [ -n "$c" ] && [ -x "$c/build/meson-linux/chimera-run" ] &&
+		[ -f "$c/build/Cores/xemu.chimeraCore" ]; then
+		crunroot="$c"
+		break
+	fi
+done
+if [ -z "$crunroot" ] || [ -z "${XBOX_DVD_PATH:-}" ]; then
+	echo "SKIP: gl:rebuild-at-zero leg - needs XBOX_DVD_PATH, plus chimera-run and an installed xemu.chimeraCore (set CHIMERA_ROOT). It is the only leg here that goes through the engine, which is what mints a context id and takes a greenzone anchor"
+else
+	gz=$(leg_dir glzero)
+	crunbin="$crunroot/build/meson-linux/chimera-run"
+	cpkg="$crunroot/build/Cores/xemu.chimeraCore"
+	printf '[Input]\nLogKey:#\n' > "$gz/none.txt"
+	glrun() { # <movie> <out> <extra args...>
+		glmovie="$1"; glout="$2"; shift 2
+		CHIMERA_GL_TRACE=1 CHIMERA_GL_STATEAUDIT=1 timeout 900 "$crunbin" "$cpkg" \
+			"$XBOX_DVD_PATH" "$glmovie" --frames 120 --gpu \
+			--firmware "mcpx=$fw/MCPX Boot ROM/mcpx_1.0.bin" \
+			--firmware "bios=$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
+			--firmware "hdd=$fw/Hard Disk/xbox_hdd.qcow2" "$@" > "$glout" 2>&1 || true
+	}
+	# the calls on the first traced frame after the restore
+	afterRestore() {
+		awk '/ce-gl-audit\] restore/ { seen = 1 }
+		     seen && match($0, /\[ce-gl\] frame [0-9]+: [0-9]+ calls/) {
+			s = substr($0, RSTART, RLENGTH); split(s, f, " "); print f[4]; exit }' "$1"
+	}
+	glrun "$gz/none.txt" "$gz/record.log" --record "$gz/movie.txt"
+	if [ ! -s "$gz/movie.txt" ]; then
+		echo "FAIL: gl:rebuild-at-zero leg - could not record a movie to rewind through (see $gz/record.log)"; fail=1
+	else
+		glrun "$gz/movie.txt" "$gz/rewind0.log" --greenzone 4096 --rewind-loop 0,1
+		glrun "$gz/movie.txt" "$gz/rewind2.log" --greenzone 4096 --rewind-loop 2,1
+		zero="$(afterRestore "$gz/rewind0.log")"
+		two="$(afterRestore "$gz/rewind2.log")"
+		if grep -q "^chimera gl: no context" "$gz/rewind0.log"; then
+			echo "SKIP: gl:rebuild-at-zero leg - this machine gives the bridge no GL context"
+		elif grep -q "Assertion failed" "$gz/rewind0.log"; then
+			echo "FAIL: gl:rebuild-at-zero leg - restoring the frame-0 anchor killed the machine: $(grep -m1 'Assertion failed' "$gz/rewind0.log")"; fail=1
+		elif [ -z "$zero" ] || [ -z "$two" ]; then
+			echo "FAIL: gl:rebuild-at-zero leg - no restore was traced (see $gz/rewind0.log and $gz/rewind2.log)"; fail=1
+		elif ! grep -q "; rebuilding" "$gz/rewind0.log"; then
+			echo "FAIL: gl:rebuild-at-zero leg - restoring the frame-0 anchor made $zero GL calls and the renderer never rebuilt, against $two restoring frame 2"; fail=1
+		elif ! grep -q "; rebuilding" "$gz/rewind2.log"; then
+			echo "FAIL: gl:rebuild-at-zero leg - restoring frame 2 made $two GL calls and the renderer never rebuilt"; fail=1
+		elif [ "$zero" -lt 100 ] || [ "$two" -lt 100 ]; then
+			echo "FAIL: gl:rebuild-at-zero leg - a rebuild was announced but only $zero / $two calls crossed the bridge after the restore"; fail=1
+		else
+			echo "PASS: gl:rebuild-at-zero leg - the frame-0 anchor restores and rebuilds ($zero calls), as does frame 2 ($two)"
+		fi
+	fi
+fi
+
 exit $fail

@@ -132,13 +132,14 @@ jobs:
           # line you cannot read a count out of hides how big the gap is. Who
           # owns running these, and when, is docs/PLAN.md, "What CI runs".
           for leg in "native:deterministic" "native == sandbox" "audio" "savestate" \
-                     "input (also needs a disc)" "gpu (also needs a disc and XBOX_GPU=1)"; do
+                     "input (also needs a disc)" "gpu (also needs a disc and XBOX_GPU=1)" \
+                     "gl:rebuild-at-zero (also needs a disc, chimera-run and an installed package)"; do
             echo "SKIP: $leg - no Xbox bios on a public runner (waterbox/run-gate.sh with XBOX_FW_DIR set)"
           done
           for leg in "boot:frontend" "gpu:frontend" "keybinds"; do
             echo "SKIP: $leg - the same bios, plus a disc (waterbox/tests/run-frontend.sh)"
           done
-          echo "--- gate: 0 of 9 emulation legs ran here; both flavors built and the guest is sandbox-clean"
+          echo "--- gate: 0 of 10 emulation legs ran here; both flavors built and the guest is sandbox-clean"
 
       - name: Build and install the waterbox core package
         # The commit is the core's authoritative version: this build is the one

@@ -12,7 +12,7 @@ diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.c b/hw/xbox/nv2a/pgraph/gl/renderer
  GloContext *g_nv2a_context_render;
  GloContext *g_nv2a_context_display;
  
-@@ -99,6 +103,55 @@
+@@ -99,6 +103,97 @@
      pg->gl_renderer_state = NULL;
  }
  
@@ -21,6 +21,41 @@ diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.c b/hw/xbox/nv2a/pgraph/gl/renderer
 + * id from the machine that was saved; the live id is this session's. They
 + * differ exactly when the objects' names are gone. (0 = cannot tell.) */
 +static uint64_t s_chimera_gl_context;
++
++/* ZERO MEANT TWO THINGS, AND ONE OF THEM WAS A LIE (chimera issue 126).
++ *
++ * The static above starts at 0 and is first written by the check below, which
++ * runs at the head of a path that is about to draw - so never during Init. But
++ * pgraph_gl_init HAS run by the end of Init, at nv2a_realize, and hands out
++ * real GL names there. So there is one state in every session that carries 0
++ * while the objects already exist: the greenzone's frame-0 anchor, taken right
++ * after Init and before the first frame advance. Loading it used to read that 0
++ * as "this machine has never held any GL objects, nothing to rebuild", when
++ * what it really means is "this state was taken before the renderer looked, so
++ * it cannot vouch for the objects the driver is holding NOW" - and those are
++ * whatever the frames after the anchor left behind: surfaces deleted and handed
++ * out again, textures resized, framebuffers reattached.
++ *
++ * Reported on PCSX2 and Maximo: Ghosts to Glory as a corrupt picture when a
++ * movie is played from frame 0 or frame 1 and a clean one from frame 2 - which
++ * is exactly where TAStudio stops reaching for the anchor, since it loads the
++ * state BEFORE the frame it is going to. The same code was in every bridged
++ * core.
++ *
++ * So the host's word for it is kept instead of being guessed from the number:
++ * the engine tells every core when the machine's memory has been replaced (the
++ * StateLoaded export, which this core already implements for the translated-code
++ * cache), and after one of those the stored 0 cannot be trusted. Recording the
++ * id during Init instead would put it in the SEALED baseline, where no state
++ * carries it as a delta, and the cross-session rebuild this function exists for
++ * would stop happening; a non-zero "never seen" sentinel fails identically,
++ * because the anchor carries whatever the static's initial value is. */
++static bool s_chimera_gl_state_loaded;
++
++void pgraph_gl_state_loaded(void)
++{
++    s_chimera_gl_state_loaded = true;
++}
 +
 +/* Has the ground moved under the GL objects? Every name this renderer holds
 + * was handed out by one context and lives in emulated memory, so a savestate
@@ -35,6 +70,12 @@ diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.c b/hw/xbox/nv2a/pgraph/gl/renderer
 + * drawing. */
 +void pgraph_gl_check_context(NV2AState *d)
 +{
++    /* taken and cleared whatever the ids say: it has been read into this
++     * decision, and a flag left standing would rebuild at some later id change
++     * for a load that is long past */
++    const bool after_load = s_chimera_gl_state_loaded;
++    s_chimera_gl_state_loaded = false;
++
 +    const uint64_t live = chimera_gl_context_id();
 +    if (live == 0 || live == s_chimera_gl_context) {
 +        if (live != 0) {
@@ -43,7 +84,8 @@ diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.c b/hw/xbox/nv2a/pgraph/gl/renderer
 +        return;
 +    }
 +
-+    if (s_chimera_gl_context != 0 && d->pgraph.gl_renderer_state != NULL) {
++    if ((s_chimera_gl_context != 0 || after_load) &&
++        d->pgraph.gl_renderer_state != NULL) {
 +        fprintf(stderr, "chimera: GL objects came from context %llu, now %llu; "
 +            "rebuilding\n", (unsigned long long)s_chimera_gl_context,
 +            (unsigned long long)live);
@@ -71,11 +113,16 @@ diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.c b/hw/xbox/nv2a/pgraph/gl/renderer
 diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.h b/hw/xbox/nv2a/pgraph/gl/renderer.h
 --- a/hw/xbox/nv2a/pgraph/gl/renderer.h
 +++ b/hw/xbox/nv2a/pgraph/gl/renderer.h
-@@ -268,6 +268,7 @@
+@@ -268,6 +268,12 @@
  void pgraph_gl_sync(NV2AState *d);
  void pgraph_gl_update_entire_memory_buffer(NV2AState *d);
  void pgraph_gl_init_display(NV2AState *d);
 +void pgraph_gl_check_context(NV2AState *d);
++/* chimera: told by the ABI layer's StateLoaded export after every load of the
++ * machine. The check above cannot tell a stored zero that means "never looked"
++ * from one that means "looked before this renderer existed"; this says which.
++ * See the comment beside s_chimera_gl_state_loaded in renderer.c. */
++void pgraph_gl_state_loaded(void);
  void pgraph_gl_finalize_display(PGRAPHState *pg);
  void pgraph_gl_init_reports(NV2AState *d);
  void pgraph_gl_finalize_reports(PGRAPHState *pg);

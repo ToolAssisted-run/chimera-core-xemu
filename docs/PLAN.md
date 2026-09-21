@@ -533,6 +533,93 @@ startup, which looks exactly like a new deadlock.
   and owns main(); the port replaces that layer entirely.
 - Rust in QEMU 10.2 is optional and stays off.
 
+## The frame-0 anchor was the one state nobody had loaded (2026-09-21)
+
+Chimera issue #126 was reported and fixed on PCSX2: a bridged core stores the
+host's GL context id beside its GL objects and rebuilds when the stored id no
+longer matches the live one, and the guard `if (stored != 0) rebuild` skips
+exactly one state - the greenzone's frame-0 anchor, which is taken right after
+Init and before any frame advance, so it is the only state in a session that
+carries the static's initial zero while a renderer's objects already exist.
+TAStudio goes to a frame by loading the state BEFORE it and emulating one
+forward, so frames 0 and 1 both load that anchor: whatever is wrong with it is
+what a person sees when they play their movie from the beginning.
+
+This core was checked against that, and what it turned up is not what was
+looked for.
+
+**The GL hole is NOT open here, and measuring said so before reasoning did.**
+`pgraph_gl_check_context` holds the identical comparison - `if
+(s_chimera_gl_context != 0 && ...)` - but it is reached during **Init**, not
+first at a frame advance: `nv2a_reset` drains the pfifo in place in the chimera
+build (`nv2a.c`, the `#else` branch of the `CONFIG_SDL` fork), the drain calls
+`ops.process_pending`, and that calls the check. So the id is already recorded
+by the time the anchor is taken. Measured with the guard left exactly as it was:
+restoring the frame-0 anchor rebuilt anyway, and said `chimera: GL objects came
+from context 6723578060911712476, now 6723577927386680121` - a stored id that is
+not zero. (Recording the id in Init is what the PCSX2 commit rejects as a FIX,
+because it lands in the sealed baseline; it is harmless as an accident here only
+because the check rewrites the static on every drain, dirtying the page, so
+every state carries the id as a delta after all.)
+
+**What IS open is worse, and the same one state.** Loading the frame-0 anchor
+ABORTED the core:
+
+    Assertion failed: !runstate_is_running() ||
+      (current_cpu && cpu_in_serial_context(current_cpu))
+      (accel/tcg/tb-maint.c: tb_flush__exclusive_or_serial: 784)
+
+`StateLoaded` flushes the translated-code buffer, because that buffer is
+invisible memory and after a load it describes the machine that was replaced.
+The flush wants the machine stopped. Between frames it IS stopped - but the
+runstate is guest memory like everything else, so what it says after a load is
+whatever the loaded state said. Every state taken at a frame boundary says
+paused, because `run_one_frame` stops the machine there. The anchor is taken
+right after Init, where `qemu_init` has started the machine and no frame has
+stopped it yet, so it is the one state that comes back saying RUNNING. So: an
+xemu project whose movie is played from frame 0 or frame 1 in TAStudio killed
+the machine, every time, and nothing had ever loaded that state to find out.
+
+The fix is one line in `StateLoaded`: the machine really is stopped here, so say
+so before the flush. The runstate then agrees with reality after every load
+rather than after all but one.
+
+**The StateLoaded flag was added anyway**, so that every bridged core holds the
+same shape and the guard says what it means rather than relying on when
+`nv2a_reset` happens to drain the pfifo - which nothing tests and which would
+open the hole silently if it moved. Being honest about it: **its absence cannot
+be observed on this core**, so there is no leg that goes red without it
+(docs/gates.md, B). What was done instead is a POSITIVE control - a build whose
+guard was `if (after_load && ...)` alone, with the `stored != 0` clause removed
+- and it rebuilt on both restores, which proves the export reaches the renderer
+and that the flag carries the decision on its own.
+
+**Measured**, `chimera-run --gpu --greenzone 4096 --rewind-loop N,1` on Prince
+of Persia: The Sands of Time under `CHIMERA_GL_TRACE=1
+CHIMERA_GL_STATEAUDIT=1`, counting the bridge crossings on the frame after the
+restore (an idle frame of this machine is 1 call):
+
+| restore to | before | after |
+|---|---|---|
+| frame 0 (the anchor) | **the core aborted in tb_flush** | 536, and it rebuilt |
+| frame 2 (an ordinary state) | 536, and it rebuilt | 536, and it rebuilt |
+| the guard with `\|\| after_load` removed, frame 0 | 536, and it rebuilt | - |
+| the guard as `after_load` ALONE, frame 0 | - | 536, and it rebuilt |
+
+The leg is `gl:rebuild-at-zero` in `waterbox/run-gate.sh` - the first leg there
+that goes through the engine, because the engine is what mints a context id and
+takes a greenzone anchor; `run-wbx --rerecord` calls `wbx_load_state` directly,
+never `StateLoaded`, and its native half answers context id 0, so neither could
+ever have witnessed this. NEGATIVE CONTROL: run against the package built before
+this change it FAILS by name - "restoring the frame-0 anchor killed the machine:
+Assertion failed: !runstate_is_running() ..." - and passes after. Whole gate with
+a disc and `XBOX_GPU=1`: 6 PASS, 0 FAIL, 2 SKIP.
+
+**What the leg does not stand in for** (docs/gates.md, E): llvmpipe is not a
+driver, and a rebuild that RUNS is not a picture that is right. No wrong picture
+was ever reproduced here on any core. It also needs the firmware and a disc, so
+it SKIPs on a public runner - see the table below.
+
 ## What CI runs, and what it does not (2026-09-20)
 
 Chimera's `docs/gates.md` calls this failure mode G: *whatever CI does not run
@@ -544,7 +631,8 @@ that record. It is a proposal for Sergio where it says so.
 `.github/workflows/chimera.yml` substitutes one line -
 `echo "SKIP emulation legs: no Xbox bios on a public runner"` - for
 `waterbox/run-gate.sh` (239 lines). `waterbox/tests/run-frontend.sh` (228
-lines) is not mentioned at all. So of nine legs, CI runs none.
+lines) is not mentioned at all. So of TEN legs - nine, plus gl:rebuild-at-zero
+since 2026-09-21 - CI runs none.
 
 | Leg | Where | CI | Needs |
 | --- | --- | --- | --- |
@@ -557,6 +645,7 @@ lines) is not mentioned at all. So of nine legs, CI runs none.
 | savestate round-trip | run-gate.sh | no | mcpx + bios + hdd |
 | input (START on pad 1 reaches the machine) | run-gate.sh | no | + a disc, 1200+ frames |
 | gpu (a real driver draws, native == sandbox) | run-gate.sh | no | + a disc, `XBOX_GPU=1`, an EGL context |
+| gl:rebuild-at-zero (the frame-0 anchor restores and rebuilds) | run-gate.sh | no | + a disc, chimera-run and an installed package (`CHIMERA_ROOT`) |
 | boot:frontend | tests/run-frontend.sh | no | mcpx + bios + hdd + a disc |
 | gpu:frontend | tests/run-frontend.sh | no | the same |
 | keybinds | tests/run-frontend.sh | no | the same (the bindings are adopted when the package LOADS, which needs a booted machine) |
