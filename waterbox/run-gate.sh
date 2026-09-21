@@ -31,11 +31,16 @@ done
 [ -n "$mb" ] && [ -d "$mb" ] || { echo "miniBox not found; set MINIBOX_DIR" >&2; exit 1; }
 mb="$(cd "$mb" && pwd)"
 mbh="$mb/build/meson-cpp/source/host"
-[ -x "$runwbx" ] || gcc -O2 -DCHIMERA_GL_BRIDGE -o "$runwbx" \
-	"$here/run-wbx.c" "$here/gl-host.c" "$here/glad/src/gl.c" \
-	-I "$mb/source/host" -I "$mb/source/gl" \
-	-I "$here/generated-gl-host" -I "$here/glad/include" \
-	"$mbh/libminiboxhost.so" -Wl,-rpath,"$mbh" -lEGL
+# Built when missing OR older than its sources: a run-wbx left over from
+# before a change to gl-host.c would put the gate's gpu leg behind a
+# dispatcher nobody had fixed yet, and it would pass.
+if [ ! -x "$runwbx" ] || [ "$here/run-wbx.c" -nt "$runwbx" ] || [ "$here/gl-host.c" -nt "$runwbx" ]; then
+	gcc -O2 -DCHIMERA_GL_BRIDGE -o "$runwbx" \
+		"$here/run-wbx.c" "$here/gl-host.c" "$here/glad/src/gl.c" \
+		-I "$mb/source/host" -I "$mb/source/gl" \
+		-I "$here/generated-gl-host" -I "$here/glad/include" \
+		"$mbh/libminiboxhost.so" -Wl,-rpath,"$mbh" -lEGL
+fi
 
 # No -icount here on purpose: both flavors now default to the cpuSpeed setting's
 # value (500 MIPS, shift=1), the guest through Init and the native reference by
@@ -76,6 +81,31 @@ leg_dir() {
 # leg just because its exit code was 0.
 nat_log_ok() {
 	! grep -q "^xemu error: Failed to open" "$1"
+}
+
+# bridge_answered FILE...: did the GPU bridge have a case for every opcode the
+# guest sent it? gl-host.c's default arm logs and returns 0, and 0 is a
+# perfectly plausible answer to nearly every question the bridge carries - so a
+# guest that was answered and a guest that was shrugged at look the same, and
+# two flavours that were both shrugged at compare EQUAL.
+#
+# That is not a worry, it is a measurement: GL_OP_CONTEXT_ID (chimera issue
+# #43, the opcode that lets the renderer notice its GL objects belong to a
+# context that is gone) had no case in gl-host.c for as long as the opcode
+# existed, and this gate was green over it. Absent was indistinguishable from
+# working (~/chimera/docs/gates.md, mode C). So no gpu leg may go green over
+# that line: every one runs this first, on each flavour's stderr that went
+# through gl-host.c, and the message names the opcodes.
+bridge_gap=""
+bridge_answered() {
+	bridge_gap=""
+	for f in "$@"; do
+		[ -f "$f" ] || continue
+		grep -q 'has no case' "$f" || continue
+		bridge_gap="the GPU bridge had no case for $(grep -o 'opcode [0-9]*' "$f" | sort -u | tr '\n' ',' | sed 's/,$//; s/,/, /g') and answered 0 ($(basename "$f"))"
+		return 1
+	done
+	return 0
 }
 
 if [ ! -f "$shared/eeprom-master.bin" ]; then
@@ -269,7 +299,13 @@ if [ -n "${XBOX_GPU:-}" ]; then
 		> "$gpu/leg-gpu-wbx.log" 2>&1 || { echo "gpu sandbox leg died"; tail -3 "$gpu/leg-gpu-wbx.log"; fail=1; }
 	# state-nat-A.bin is the base leg's baseline (this run, not a leftover),
 	# used here to prove the GPU actually left a trace in machine state.
-	if [ ! -s "$gpu/state-gpu-nat-A.bin" ] || [ ! -s "$gpu/state-gpu-wbx.bin" ] || [ ! -s "$base/state-nat-A.bin" ]; then
+	# The sandbox run is the one that went through gl-host.c (the native
+	# binary drives EGL itself), and it is held to bridge_answered FIRST: the
+	# machine state compared below does not carry the bridge's answers, so
+	# two states agreed while opcode 4 went unanswered 920,292 times a run.
+	if ! bridge_answered "$gpu/leg-gpu-wbx.log"; then
+		echo "FAIL: gpu leg - $bridge_gap"; fail=1
+	elif [ ! -s "$gpu/state-gpu-nat-A.bin" ] || [ ! -s "$gpu/state-gpu-wbx.bin" ] || [ ! -s "$base/state-nat-A.bin" ]; then
 		echo "FAIL: gpu leg - a run (or the base leg's baseline) wrote no machine state"; fail=1
 	elif ! cmp -s "$gpu/state-gpu-nat-A.bin" "$gpu/state-gpu-nat-B.bin"; then
 		echo "FAIL: gpu leg - native runs differ"; fail=1
@@ -278,7 +314,7 @@ if [ -n "${XBOX_GPU:-}" ]; then
 	elif cmp -s "$gpu/state-gpu-nat-A.bin" "$base/state-nat-A.bin"; then
 		echo "FAIL: gpu leg - the GPU left no trace (did it draw at all?)"; fail=1
 	else
-		echo "PASS: gpu leg - the GPU drew, native == sandbox on this driver"
+		echo "PASS: gpu leg - the GPU drew, native == sandbox on this driver, and every opcode the guest sent had a case"
 	fi
 else
 	echo "SKIP: gpu leg - set XBOX_GPU=1 to render through a real driver (EGL surfaceless natively, the bridge in the sandbox) and hold the two byte-equal at 600 frames"

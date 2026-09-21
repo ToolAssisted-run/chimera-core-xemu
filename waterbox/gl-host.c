@@ -29,20 +29,32 @@
 #include "gl-bridge.h"
 #include "gl-bridge-ops.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <windows.h>
 #else
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <unistd.h> /* getpid: per-process entropy for a context's identity */
 #ifndef EGL_PLATFORM_SURFACELESS_MESA
 #define EGL_PLATFORM_SURFACELESS_MESA 0x31DD
 #endif
 #endif
 
 static int s_version;
+
+/* Which context the calls are landing on: GL_OP_CONTEXT_ID, chimera issue
+ * #43. Zero until one is made, and zero is the contract's "cannot tell". */
+static uint64_t s_context_id;
+
+/* Opcodes this dispatcher had no case for, counted rather than only logged.
+ * See the default arm at the bottom for why the count exists. */
+static unsigned long s_unhandled;
+static long s_unhandled_op;
 
 /* ---------------------------------------------------------------------------
  * Windows: a context from a window nobody sees.
@@ -215,6 +227,67 @@ static void step(const char *what)
 	fflush(stderr);
 }
 
+/* Mint a fresh context id (chimera's engine does the same in gl_bridge.cpp,
+ * mint_context_id). It need only DIFFER from any other id the guest has seen -
+ * the renderer compares it for equality and nothing else - so it comes from
+ * where this process sits in memory, the clock, the pid and a monotone count.
+ *
+ * The pid and a high-resolution counter carry the weight. An address is not
+ * per-process entropy on Windows (a DLL's base is randomised once per BOOT and
+ * shared by every process that loads it), and `time()` at one-second
+ * granularity is not either: two runs starting within the same second would
+ * mint the SAME id, the guest would conclude its GL objects were still good,
+ * and hand a dead process's object names to the driver. That is the whole
+ * failure this opcode exists to prevent, so it must not rest on a clock tick.
+ *
+ * chimera's host mints again on every state load as well as per session,
+ * because a same-session load puts back the renderer's idea of every object
+ * but not the objects. The harness does that through
+ * chimera_gl_host_state_loaded, called by run-wbx where it loads one. */
+static void mint_context_id(void)
+{
+	static uint64_t made;
+	uint64_t per_process;
+#ifdef _WIN32
+	LARGE_INTEGER qpc;
+	QueryPerformanceCounter(&qpc);
+	per_process = ((uint64_t)GetCurrentProcessId() << 32) ^ (uint64_t)qpc.QuadPart;
+#else
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	per_process = ((uint64_t)getpid() << 32)
+		^ ((uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec);
+#endif
+	s_context_id = ((uint64_t)(uintptr_t)&s_context_id << 16)
+		^ ((uint64_t)time(NULL) << 8)
+		^ per_process
+		^ (++made);
+	if (s_context_id == 0)
+		s_context_id = 1; /* 0 is reserved for "cannot tell" */
+}
+
+/* A state was loaded into a machine that is already drawing. The names in it
+ * are this context's names, but not these objects: the frames AFTER the saved
+ * one reallocated, redrew and reattached them. Same context, same names,
+ * different things - so the guest is shown a moved id and rebuilds, which is
+ * what chimera's ce_gl_state_loaded does for a core that does not declare
+ * video.rebuildOnStateLoad false. xemu declares nothing, so it rebuilds. */
+void chimera_gl_host_state_loaded(void)
+{
+	if (s_context_id != 0)
+		mint_context_id();
+}
+
+/* How many calls this dispatcher answered with a shrug, and the last opcode it
+ * did that for. run-wbx says this out loud at the end of a run and the
+ * gate fails any leg it is not zero for. */
+unsigned long chimera_gl_host_unhandled(long *last_op)
+{
+	if (last_op)
+		*last_op = s_unhandled_op;
+	return s_unhandled;
+}
+
 int chimera_gl_host_init(char *err, int errlen)
 {
 	step("creating a context");
@@ -240,6 +313,11 @@ int chimera_gl_host_init(char *err, int errlen)
 			GLAD_VERSION_MAJOR(s_version), GLAD_VERSION_MINOR(s_version));
 		return -1;
 	}
+
+	/* There is a context now, so there is an identity to hand out. Minted
+	 * here rather than lazily in the dispatcher, so that the first call to
+	 * ask gets the same answer as the last. */
+	mint_context_id();
 
 	return 0;
 }
@@ -295,6 +373,21 @@ uintptr_t BRIDGE_ABI chimera_gl_host_dispatch(uintptr_t op, uintptr_t a, uintptr
 			 * which it can do safely because the master list is append-only. */
 			return CHIMERA_GL_OP_LIST_LENGTH;
 
+		case GL_OP_CONTEXT_ID:
+			/* Which context these calls are landing on (chimera issue #43).
+			 * Every GL object the renderer holds is a NAME this context handed
+			 * out, and those names live in GUEST memory - so a savestate
+			 * carries them into a session where they name nothing, the driver
+			 * refuses every call using one, and the guest is never told. The
+			 * renderer keeps this number beside its objects
+			 * (pgraph_gl_check_context, hw/xbox/nv2a/pgraph/gl/renderer.c) and
+			 * rebuilds them when it moves. Answering 0, which is what this host
+			 * did before it had this case, means "cannot tell" - and a renderer
+			 * that cannot tell must assume nothing moved, so it kept the dead
+			 * session's names. That is the whole of issue #43, back again, in
+			 * the one harness that exists to prove it fixed. */
+			return (uintptr_t)s_context_id;
+
 		case GL_OP_CLEAR_TEST:
 		{
 			/* Real work on the real device, and the result handed back: clear
@@ -327,7 +420,32 @@ uintptr_t BRIDGE_ABI chimera_gl_host_dispatch(uintptr_t op, uintptr_t a, uintptr
 #include "gl-bridge-host.inc"
 
 		default:
-			fprintf(stderr, "gpu bridge: opcode %ld has no case\n", (long)op);
+			/* An opcode with no case returns 0, and 0 is a PLAUSIBLE answer to
+			 * most of the questions the bridge carries - so the guest cannot
+			 * tell a host that answered from one that shrugged, and neither
+			 * can a gate comparing two runs that both shrugged.
+			 *
+			 * That is not a hypothetical. GL_OP_CONTEXT_ID had no case here
+			 * for as long as the opcode existed. Measured 2026-09-21: the
+			 * gate's 600-frame gpu leg printed this line 920,292 times in the
+			 * sandbox run - pgraph_gl_check_context asks on every pfifo drain
+			 * - and the leg PASSED, because the machine state it compares
+			 * across flavours does not carry the answer.
+			 * Absent was indistinguishable from working
+			 * (~/chimera/docs/gates.md, mode C).
+			 *
+			 * So it is counted as well as logged, chimera_gl_host_unhandled
+			 * hands the count to the runners, they print it, and every gpu leg
+			 * in run-gate.sh fails when it is not zero. The log is capped
+			 * because a line per ask is how this one stayed invisible; the
+			 * count is not. */
+			s_unhandled++;
+			s_unhandled_op = (long)op;
+			if (s_unhandled <= 8)
+				fprintf(stderr, "gpu bridge: opcode %ld has no case\n", (long)op);
+			else if (s_unhandled == 9)
+				fprintf(stderr, "gpu bridge: opcode %ld has no case"
+					" (further reports suppressed; the count is printed at the end)\n", (long)op);
 			return 0;
 	}
 }

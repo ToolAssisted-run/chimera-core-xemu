@@ -620,6 +620,69 @@ driver, and a rebuild that RUNS is not a picture that is right. No wrong picture
 was ever reproduced here on any core. It also needs the firmware and a disc, so
 it SKIPs on a public runner - see the table below.
 
+## The gate's own GL host had no case for the context id (2026-09-21)
+
+Found on rpcs3 (its b1b88fe) and checked here the same morning, with the same
+result. `waterbox/gl-host.c` is the host half of the GPU bridge that THIS
+repository's `run-wbx` hands `core.wbx` under `CHIMERA_GPU=1` - the sandbox
+flavour of the gpu leg. It had no case for `GL_OP_CONTEXT_ID`, the opcode
+that exists so `pgraph_gl_check_context` can tell that the GL names it holds
+belong to a context that is gone (chimera issue #43), for as long as the
+opcode has existed. The default arm printed `opcode 4 has no case` and
+returned 0, and 0 is the contract's "cannot tell": the renderer concluded
+nothing had moved and kept the names. Chimera's real host (gl_bridge.cpp)
+answers the opcode and the native reference drives EGL itself, so neither the
+frontend nor the native flavour was affected; the harness that stands in for
+the frontend was.
+
+**Measured before anything was changed.** The gate's gpu leg, 600 frames of
+the dashboard on llvmpipe, sandbox flavour: the line printed **920,292 times**
+in one run - `pgraph_gl_check_context` asks on every pfifo drain - and the leg
+PASSED, because the machine state it compares across flavours does not carry
+the bridge's answers. With the case present the 37,567,268-byte state is
+byte-identical to the run without it: nothing was lost from the command
+stream, only the answer to the one question that makes a restore safe. Absent
+was indistinguishable from working (chimera docs/gates.md, mode C). 920,292
+lines a run is also why nobody read them.
+
+**The fix is rpcs3's, all three parts.** The case answers an id minted the way
+the engine mints it (pid and a high-resolution counter carry the per-process
+entropy; `time()` alone would hand two runs in the same second the SAME id);
+the host mints again on every state load through `chimera_gl_host_state_loaded`,
+which run-wbx calls at its `--rerecord` load, because chimera's host does
+(`ce_gl_state_loaded`; this core declares no `video.rebuildOnStateLoad`, so it
+rebuilds). The default arm COUNTS as well as logs, caps its own chatter at
+eight lines, and `chimera_gl_host_unhandled` hands the count to run-wbx, which
+prints it at the end. And `bridge_answered` in run-gate.sh fails the gpu leg
+when `leg-gpu-wbx.log` carries the line, before any state is compared.
+
+One more thing in run-gate.sh: it used to build `build/run-wbx` only when the
+file was MISSING, so a runner left over from before a change to gl-host.c
+would have kept the gate's gpu leg behind the old dispatcher. It now rebuilds
+when either source is newer than the binary.
+
+**Proved by breaking it.** With the case label changed to a number nothing
+sends (the gate rebuilt run-wbx itself, from the stale check above), the full
+gate with `XBOX_GPU=1` said:
+
+    FAIL: gpu leg - the GPU bridge had no case for opcode 4 and answered 0 (leg-gpu-wbx.log)
+
+With the case back: `PASS: gpu leg - the GPU drew, native == sandbox on this
+driver, and every opcode the guest sent had a case`. Gate at the commit, `XBOX_GPU=1 run-gate.sh`: 6 PASS, 0 FAIL, 3 SKIP; the
+negative control had the gpu leg as its failure. That negative-control run
+also reported `native runs differ` in the base leg - virtual clocks
+1001010232 ns against 1001010000 ns - while three gates and two builds
+shared the machine; run alone, the same binaries agree, and did again here.
+The native reference was not touched by this change; it is noted because a
+gate started beside other heavy work can say that.
+
+**Not run here.** `gl:rebuild-at-zero` and the input leg need `XBOX_DVD_PATH`,
+and this machine holds no Xbox disc today, so they SKIP by name.
+
+**What this does not establish** (gates.md, E): the dashboard on llvmpipe is
+neither a game nor a driver. The leg proves the dispatcher answered every
+opcode the guest sent, not that a picture is right on real hardware.
+
 ## What CI runs, and what it does not (2026-09-20)
 
 Chimera's `docs/gates.md` calls this failure mode G: *whatever CI does not run
