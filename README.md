@@ -42,10 +42,12 @@ land in an in-memory overlay.
 
     XBOX_DVD_PATH=<game.iso> XBOX_GPU=1 waterbox/run-gate.sh 1200
 
-Six legs, all byte-for-byte: native A/B, native == sandbox, the audio
+Its legs are all byte-for-byte: native A/B, native == sandbox, the audio
 stream, savestates reloaded around every frame, held input reaching the
-game, and the GPU leg - where, because the Xbox is UMA and rendered
-surfaces download back into RAM, "the machines agree" includes the picture.
+game, and the GPU legs - where, because the Xbox is UMA and rendered
+surfaces download back into RAM, "the machines agree" includes the picture;
+the internal resolution is a different machine at 2x and 3x, and the frame-0
+anchor restores and rebuilds its GL.
 
     XBOX_DVD_PATH=<game.iso> waterbox/tests/run-frontend.sh
 
@@ -68,5 +70,5 @@ race.
   the EGL context the native reference renders through.
 - `waterbox/samplerate/`, `waterbox/det-pow.c` - vendored so both builds
   compute identical audio samples.
-- `patches/` - numbered, one owner per upstream file; `docs/PLAN.md` tells
+- `patches/` - numbered; `docs/PLAN.md` tells
   the whole story, mechanism by mechanism.
