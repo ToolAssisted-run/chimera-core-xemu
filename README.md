@@ -13,11 +13,25 @@ Unlike every other Chimera core, this one drives xemu's OWN configure/meson
 reference build and a sandboxed cross build, changed only by the numbered
 patches in `patches/` and the driver sources `apply-patches.sh` copies in.
 
+## Using it in Chimera
+
+Chimera ships no cores and downloads none. Download `xemu-<version>.chimeraCore`
+from this repository's
+[Releases](https://github.com/ToolAssisted-run/chimera-core-xemu/releases) page,
+or build it, and put it in Chimera's `Cores` folder: the one beside
+`Chimera.exe`, or the folder chosen in File > Core Manager > Change folder...
+File > Core Manager lists it. The same file works on Linux and on Windows.
+
 ## Building
 
     waterbox/setup-native.sh && ninja -C build/qemu-native qemu-system-i386
-    waterbox/setup-guest.sh  && ninja -C build/qemu-guest  qemu-system-i386
-    waterbox/build-package.sh        # -> <chimera>/build/Cores/xemu.chimeraCore
+    waterbox/setup-guest.sh -m <miniBox> && ninja -C build/qemu-guest qemu-system-i386
+    waterbox/build-package.sh -r <chimera>   # -> <chimera>/build/Cores/xemu.chimeraCore
+
+`<chimera>` is a Chimera checkout and `<miniBox>` its
+`extern/chimera-common-minibox`, built with the C++ guest toolchain. The full
+instructions are in [docs/BUILDING.md](docs/BUILDING.md); an AI coding agent
+working here starts at [AGENTS.md](AGENTS.md).
 
 ## The gate
 
