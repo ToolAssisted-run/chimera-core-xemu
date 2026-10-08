@@ -753,6 +753,72 @@ and this machine holds no Xbox disc today, so they SKIP by name.
 neither a game nor a driver. The leg proves the dispatcher answered every
 opcode the guest sent, not that a picture is right on real hardware.
 
+## What the GPU drew was not in a state (2026-10-08; chimera issue 190)
+
+The report was a wrong picture for a moment after every load from the
+greenzone (chimera issues 187 and 190), and it was first answered with a
+window of kept pictures in the engine. Measured on a GTX 1060 it turned out to
+be this core: the first frame drawn after a load showed the previous frame's
+picture in Soulcalibur II, and Prince of Persia: The Sands of Time showed
+leftovers of the boot logo and then black for five frames. Through llvmpipe
+the boot animation comes back black for one frame, which is how it is tested
+here.
+
+**Why.** Under TCG the GL renderer writes a surface into the console's RAM
+only when the processor reads it (`surface_access_callback`); until then the
+picture is in the driver and RAM holds what was there before. A sandbox state
+is the machine's memory. A load mints a new GL context (chimera issue 43), the
+renderer throws its objects away and rebuilds them from that memory, and every
+surface drawn and not yet read is gone: the buffer about to be flipped, a
+render target a later pass samples, the half of a frame already drawn.
+Upstream writes them out before its own savestates (`nv2a_vm_state_change`,
+`RUN_STATE_SAVE_VM`); a sandbox snapshot runs no such hook - the same gap the
+context id closed from the other side.
+
+**Decided by Sergio, 2026-10-08:** "fix it in the xemu core" (over a longer
+window in the engine, or leaving it).
+
+**What was done.** Chimera's engine has a second optional export beside
+`StateLoaded`: `StateSaving`, called before every state it takes and for no
+frame it does not store. The driver answers with
+`nv2a_chimera_flush_surfaces` (patch 0019), which is upstream's
+`pre_savevm_trigger` and `pre_savevm_wait` serviced on the calling thread, as
+the display read is. Nothing else changed: the rebuild already read
+everything back from RAM.
+
+**Measured** (Chimera's `chimera-run --settle-probe`, a state on every frame
+so the load lands on the frame before; `CHIMERA_NO_STATE_SAVING=1` is the
+engine leaving the core untold, the control):
+
+- boot animation, llvmpipe: untold, the first frame after the load is black;
+  told, all six compared are exact;
+- Soulcalibur II, GTX 1060: untold, 90% of the first frame's pixels differ;
+  told, exact - and through the frontend with TAStudio, kept pictures off,
+  every picture right, the frame after an edit among them;
+- Prince of Persia, GTX 1060: untold, five frames wrong; told, frames 1, 3
+  and 5 on exact, frames 2 and 4 off by one level in most pixels (half a
+  percent by more than 8, none by more than 22). A render target comes back
+  as a texture read from RAM, which is not sampled quite as the surface was;
+  upstream's loadvm empties the surface cache the same way. Not chased;
+- the machine: 300 frames told every frame, every seventh, and only at the
+  end leave the same RAM and the same picture byte for byte;
+- the cost: about 5.6 ms a capture on that card. The engine's history weighs
+  a capture against a frame, so a run takes the same time and keeps a state
+  every 4 frames of a 3D scene where it kept one every 1 or 2.
+
+The leg is `gl:picture-after-load` in `waterbox/run-gate.sh`.
+
+Running the gate for this with Soulcalibur II in the drive failed
+`gpu:internalResolution` on its size half - "640x480 / 640x480 / 640x480" -
+with the setting working. The leg read the picture at frame 1200, where that
+game is still playing its intro film and no GPU surface scans out; the disc
+it was written against had started drawing by then. The size is now asked of
+the boot animation at 260 frames (1280x960 at 2x, 1920x1440 at 3x), which
+every disc shows; the machine-state half still runs to 1200.
+
+**What it does not establish.** Two games and a boot animation. A state taken
+by an older package has RAM without the surfaces and loads as it always did.
+
 ## What CI runs, and what it does not (2026-09-20)
 
 Chimera's `docs/gates.md` calls this failure mode G: *whatever CI does not run
@@ -764,8 +830,9 @@ that record. It is a proposal for Sergio where it says so.
 `.github/workflows/chimera.yml` substitutes one line -
 `echo "SKIP emulation legs: no Xbox bios on a public runner"` - for
 `waterbox/run-gate.sh` (239 lines). `waterbox/tests/run-frontend.sh` (228
-lines) is not mentioned at all. So of TEN legs - nine, plus gl:rebuild-at-zero
-since 2026-09-21 - CI runs none.
+lines) is not mentioned at all. So of ELEVEN legs - nine, plus
+gl:rebuild-at-zero since 2026-09-21 and gl:picture-after-load since
+2026-10-08 - CI runs none.
 
 | Leg | Where | CI | Needs |
 | --- | --- | --- | --- |
@@ -780,6 +847,7 @@ since 2026-09-21 - CI runs none.
 | gpu (a real driver draws, native == sandbox) | run-gate.sh | no | + a disc, `XBOX_GPU=1`, an EGL context |
 | gpu:internalResolution (2x and 3x are different machines and bigger pictures; nothing under the null renderer) | run-gate.sh | no | + a disc, `XBOX_GPU=1`, 1200 frames |
 | gl:rebuild-at-zero (the frame-0 anchor restores and rebuilds) | run-gate.sh | no | + a disc, chimera-run and an installed package (`CHIMERA_ROOT`) |
+| gl:picture-after-load (the frame drawn right after a load is the picture it was; untold, it is not) | run-gate.sh | no | the same, and a chimera-run with `--settle-probe` |
 | boot:frontend | tests/run-frontend.sh | no | mcpx + bios + hdd + a disc |
 | gpu:frontend | tests/run-frontend.sh | no | the same |
 | keybinds | tests/run-frontend.sh | no | the same (the bindings are adopted when the package LOADS, which needs a booted machine) |

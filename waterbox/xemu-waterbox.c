@@ -677,6 +677,19 @@ ECL_EXPORT void StateLoaded(void)
     pgraph_gl_state_loaded();
 }
 
+/* Told by the host before every state it takes of the machine (a greenzone
+ * capture, a savestate, a branch's state file). The GL renderer writes the
+ * surfaces it has drawn into the console's RAM, where a state can hold them;
+ * see nv2a_chimera_flush_surfaces. The null renderer draws nothing and has
+ * nothing to write. */
+void nv2a_chimera_flush_surfaces(void);
+ECL_EXPORT void StateSaving(void)
+{
+    if (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_OPENGL) {
+        nv2a_chimera_flush_surfaces();
+    }
+}
+
 ECL_EXPORT int Init(void)
 {
     setlocale(LC_NUMERIC, "C");

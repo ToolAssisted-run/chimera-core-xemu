@@ -1,0 +1,58 @@
+gpu bridge: what the GPU drew goes into RAM before a state is taken
+
+Under TCG the GL renderer writes a surface into the console's RAM only when
+the processor reads it. A state is the machine's memory and nothing of the
+driver's, and a load throws the GL objects away and rebuilds them from that
+memory - so every surface drawn and not yet read was lost with the load: the
+buffer about to be flipped, a render target a later pass samples, the half
+of a frame already drawn. On a GTX 1060 the first frame after a load showed
+the previous frame's picture in one game and five frames of leftovers and
+black in another (chimera#190).
+
+Upstream writes them out before its own savestates (nv2a_vm_state_change,
+RUN_STATE_SAVE_VM). A sandbox snapshot runs no such hook, so
+nv2a_chimera_flush_surfaces does the same on request, and the driver calls it
+when the engine says a state is about to be taken (StateSaving).
+
+diff --git a/hw/xbox/nv2a/pgraph/gl/display.c b/hw/xbox/nv2a/pgraph/gl/display.c
+--- a/hw/xbox/nv2a/pgraph/gl/display.c
++++ b/hw/xbox/nv2a/pgraph/gl/display.c
+@@ -474,3 +474,26 @@
+     *out_h = h;
+     return 1;
+ }
++
++/* CHIMERA: what the GPU drew, into the machine. Under TCG a surface is written
++ * into the console's RAM only when the processor reads it; until then RAM
++ * holds whatever was there before and the picture is in the driver. A state is
++ * the machine's memory and nothing of the driver's, so one taken as things
++ * stand has the RAM of a console whose screen is elsewhere - and a load, which
++ * throws the GL objects away and rebuilds them from that RAM, loses every
++ * surface drawn and not yet read: the buffer about to be flipped, a render
++ * target a later pass samples, the half of a frame already drawn. Upstream
++ * does this before its own savestates (nv2a_vm_state_change, RUN_STATE_SAVE_VM);
++ * a sandbox snapshot runs no such hook, so the driver calls it from the
++ * engine's "a state is about to be taken" (StateSaving, chimera#190).
++ * The machine is stopped at a frame boundary; pre_savevm_wait services the
++ * request on this thread (pfifo_service_pending), as the display read does. */
++void nv2a_chimera_flush_surfaces(void)
++{
++    NV2AState *d = g_nv2a;
++    if (d == NULL || d->pgraph.gl_renderer_state == NULL) {
++        return;
++    }
++    pgraph_pre_savevm_trigger(d);
++    pgraph_pre_savevm_wait(d);
++}
+diff --git a/hw/xbox/nv2a/pgraph/gl/renderer.h b/hw/xbox/nv2a/pgraph/gl/renderer.h
+--- a/hw/xbox/nv2a/pgraph/gl/renderer.h
++++ b/hw/xbox/nv2a/pgraph/gl/renderer.h
+@@ -40,6 +40,8 @@
+ /* CHIMERA: the presented frame, read back for the driver's video export */
+ int nv2a_chimera_read_display(uint8_t *out, int cap_w, int cap_h,
+                               int *out_w, int *out_h);
++/* CHIMERA: the surfaces the GPU drew, written into RAM before a state is taken */
++void nv2a_chimera_flush_surfaces(void);
+ #include "constants.h"
+ 
+ typedef struct SurfaceBinding {

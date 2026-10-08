@@ -296,11 +296,18 @@ Legs, all byte for byte:
 - gpu - the GL renderer draws through a real driver, native == sandbox on
   this driver. Needs `XBOX_GPU=1`; SKIP otherwise.
 - gpu:internalResolution - the setting reaches the renderer and a scaled
-  render is a different machine. Needs `XBOX_GPU=1` and `XBOX_DVD_PATH`.
+  render is a different machine. The picture's size is asked of the boot
+  animation (260 frames), which is the same whatever disc is in the drive.
+  Needs `XBOX_GPU=1` and `XBOX_DVD_PATH`.
 - gl:rebuild-at-zero - a restore to the frame-0 state survives and the
   renderer rebuilds. Needs `XBOX_DVD_PATH`, plus `chimera-run` and an
   installed package in a Chimera checkout (`CHIMERA_ROOT`, or `../chimera`, or
   `$HOME/chimera`).
+- gl:picture-after-load - six frames of the boot animation drawn right after
+  a state load are the pictures they were, and with the engine leaving the
+  core untold (`CHIMERA_NO_STATE_SAVING=1`) the first is not. Needs the same
+  as gl:rebuild-at-zero, and a Chimera whose `chimera-run` has
+  `--settle-probe` (4c029b1 or later).
 
 The full local run that `docs/PLAN.md` gives:
 

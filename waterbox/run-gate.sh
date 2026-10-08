@@ -338,6 +338,13 @@ fi
 # view of RAM (640x480 whatever the scale) and the size half could not be
 # asserted. At 1200 the game has drawn its first frames.
 #
+# The SIZE half is asked of the boot animation, at 260 frames, and not of frame
+# 1200: what is on the screen there depends on the disc - a game still playing
+# its intro film has no GPU surface on the scanout either, and Soulcalibur II
+# failed this leg with "640x480 / 640x480 / 640x480" over a setting that
+# worked (2026-10-08). The animation is drawn by the GPU, scans out a surface,
+# and is the same whatever disc is in the drive.
+#
 # The last run is the control: under the null renderer nothing is drawn, so 2x
 # must change NOTHING - the base leg's sandbox state, byte for byte. That is
 # the half that protects the deterministic machine from the setting.
@@ -353,6 +360,14 @@ if [ -n "${XBOX_GPU:-}" ] && [ -n "${XBOX_DVD_PATH:-}" ]; then
 			--dvd "$XBOX_DVD_PATH" --settings "$res/settings-$scale.json" \
 			--frames 1200 --state-out "$res/state-$scale.bin" --video-out "$res/video-$scale.bin" \
 			> "$res/leg-$scale.log" 2>&1 || { echo "gpu:internalResolution $scale run died"; tail -3 "$res/leg-$scale.log"; fail=1; }
+		CHIMERA_GPU=1 timeout 600 "$runwbx" "$wbx" \
+			--mcpx "$fw/MCPX Boot ROM/mcpx_1.0.bin" \
+			--bios "$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
+			--eeprom "$shared/eeprom-master.bin" \
+			--hdd "$fw/Hard Disk/xbox_hdd.qcow2" \
+			--dvd "$XBOX_DVD_PATH" --settings "$res/settings-$scale.json" \
+			--frames 260 --video-out "$res/boot-$scale.bin" \
+			> "$res/boot-$scale.log" 2>&1 || { echo "gpu:internalResolution $scale boot-animation run died"; tail -3 "$res/boot-$scale.log"; fail=1; }
 	done
 	printf '{"internalResolution":"2x"}' > "$res/settings-null.json"
 	timeout 590 "$runwbx" "$wbx" \
@@ -371,8 +386,8 @@ if [ -n "${XBOX_GPU:-}" ] && [ -n "${XBOX_DVD_PATH:-}" ]; then
 		echo "FAIL: gpu:internalResolution leg - 2x left the same machine as 1x: the setting never reached the renderer"; fail=1
 	elif cmp -s "$res/state-2x.bin" "$res/state-3x.bin"; then
 		echo "FAIL: gpu:internalResolution leg - 3x left the same machine as 2x"; fail=1
-	elif [ "$(video_size "$res/leg-1x.log")" != "640x480" ] || [ "$(video_size "$res/leg-2x.log")" != "1280x960" ] || [ "$(video_size "$res/leg-3x.log")" != "1920x1440" ]; then
-		echo "FAIL: gpu:internalResolution leg - the picture came out $(video_size "$res/leg-1x.log") / $(video_size "$res/leg-2x.log") / $(video_size "$res/leg-3x.log") at 1x / 2x / 3x, wanted 640x480 / 1280x960 / 1920x1440"; fail=1
+	elif [ "$(video_size "$res/boot-1x.log")" != "640x480" ] || [ "$(video_size "$res/boot-2x.log")" != "1280x960" ] || [ "$(video_size "$res/boot-3x.log")" != "1920x1440" ]; then
+		echo "FAIL: gpu:internalResolution leg - the boot animation came out $(video_size "$res/boot-1x.log") / $(video_size "$res/boot-2x.log") / $(video_size "$res/boot-3x.log") at 1x / 2x / 3x, wanted 640x480 / 1280x960 / 1920x1440"; fail=1
 	elif [ ! -s "$base/state-wbx.bin" ] || ! cmp -s "$base/state-wbx.bin" "$res/state-null-2x.bin"; then
 		echo "FAIL: gpu:internalResolution leg - 2x changed the machine under the NULL renderer, where nothing is drawn"; fail=1
 	else
@@ -460,6 +475,67 @@ else
 			echo "FAIL: gl:rebuild-at-zero leg - a rebuild was announced but only $zero / $two calls crossed the bridge after the restore"; fail=1
 		else
 			echo "PASS: gl:rebuild-at-zero leg - the frame-0 anchor restores and rebuilds ($zero calls), as does frame 2 ($two)"
+		fi
+	fi
+fi
+
+# The gl:picture-after-load leg (chimera issue 190): the frame drawn right
+# after a state load is the picture that frame had.
+#
+# It was not. Under TCG the GL renderer writes a surface into the console's RAM
+# only when the processor reads it, a state is that RAM and nothing of the
+# driver's, and a load rebuilds every GL object from it - so whatever had been
+# drawn and not yet read was gone. On a GTX 1060 the first frame after a load
+# was the previous frame's picture in one game and five frames of leftovers and
+# black in another; through llvmpipe the boot animation comes back black for a
+# frame. Patch 0019 writes the surfaces out when the engine says a state is
+# about to be taken (the StateSaving export).
+#
+# What it measures, with chimera-run --settle-probe: six frames of the boot
+# animation are remembered as first drawn, the machine is put back on the frame
+# before them - a state on every frame, so the load lands exactly there - and
+# each is drawn again and compared. All six must be the picture they were. And
+# the same run with CHIMERA_NO_STATE_SAVING=1, the engine leaving the core
+# untold, must NOT be: that is the control, and without it a scene that never
+# showed the loss (a still picture) would pass for a fix.
+#
+# WHAT IT DOES NOT STAND IN FOR: one scene, through llvmpipe. A game that
+# samples a render target the load threw away can still differ faintly for a
+# frame or two (Prince of Persia's pause screen, on the real card: most pixels
+# by one level) - a texture rebuilt from RAM is not sampled quite as the
+# surface was, and upstream's own loadvm does the same.
+if [ -z "$crunroot" ] || [ -z "${XBOX_DVD_PATH:-}" ]; then
+	echo "SKIP: gl:picture-after-load leg - needs XBOX_DVD_PATH, plus chimera-run and an installed xemu.chimeraCore (set CHIMERA_ROOT)"
+else
+	pal=$(leg_dir glafterload)
+	printf '[Input]\nLogKey:#\n' > "$pal/none.txt"
+	palrun() { # <movie> <out> <extra args...>
+		palmovie="$1"; palout="$2"; shift 2
+		CHIMERA_PICTURE_TRACE=1 timeout 900 "$crunroot/build/meson-linux/chimera-run" \
+			"$crunroot/build/Cores/xemu.chimeraCore" "$XBOX_DVD_PATH" "$palmovie" --frames 260 --gpu \
+			--firmware "mcpx=$fw/MCPX Boot ROM/mcpx_1.0.bin" \
+			--firmware "bios=$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
+			--firmware "hdd=$fw/Hard Disk/xbox_hdd.qcow2" "$@" > "$palout" 2>&1 || true
+	}
+	palrun "$pal/none.txt" "$pal/record.log" --record "$pal/movie.txt"
+	if [ ! -s "$pal/movie.txt" ]; then
+		echo "FAIL: gl:picture-after-load leg - could not record a movie to go back through (see $pal/record.log)"; fail=1
+	else
+		palprobe="--greenzone 4096 --greenzone-period 1 --greenzone-max-stride 1 --settle-probe 240,6"
+		palrun "$pal/movie.txt" "$pal/told.log" $palprobe
+		CHIMERA_NO_STATE_SAVING=1 palrun "$pal/movie.txt" "$pal/untold.log" $palprobe
+		if grep -q "^chimera gl: no context" "$pal/told.log"; then
+			echo "SKIP: gl:picture-after-load leg - this machine gives the bridge no GL context"
+		elif grep -q "^usage: chimera-run" "$pal/told.log"; then
+			echo "SKIP: gl:picture-after-load leg - this chimera-run has no --settle-probe (Chimera older than 4c029b1)"
+		elif ! grep -q "^pictrace: load, on frame 240:" "$pal/told.log" || ! grep -q "^pictrace: load, on frame 240:" "$pal/untold.log"; then
+			echo "FAIL: gl:picture-after-load leg - the load did not land on the frame before the ones compared, so nothing was measured (see $pal/told.log)"; fail=1
+		elif ! grep -q "^settle-probe: the picture is wrong up to drawn frame" "$pal/untold.log"; then
+			echo "FAIL: gl:picture-after-load leg - the control drew every frame right with the core untold: this scene does not show the loss, or the engine told it anyway (see $pal/untold.log)"; fail=1
+		elif ! grep -q "^settle-probe: every frame drawn after the load is the picture it was" "$pal/told.log"; then
+			echo "FAIL: gl:picture-after-load leg - $(grep -m1 '^settle-probe: the picture is wrong' "$pal/told.log" || echo 'the probe gave no verdict') (see $pal/told.log)"; fail=1
+		else
+			echo "PASS: gl:picture-after-load leg - six frames drawn right after a load are the pictures they were; with the core left untold the first is not"
 		fi
 	fi
 fi

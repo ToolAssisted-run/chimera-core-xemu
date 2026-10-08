@@ -46,8 +46,9 @@ Its legs are all byte-for-byte: native A/B, native == sandbox, the audio
 stream, savestates reloaded around every frame, held input reaching the
 game, and the GPU legs - where, because the Xbox is UMA and rendered
 surfaces download back into RAM, "the machines agree" includes the picture;
-the internal resolution is a different machine at 2x and 3x, and the frame-0
-anchor restores and rebuilds its GL.
+the internal resolution is a different machine at 2x and 3x, the frame-0
+anchor restores and rebuilds its GL, and the frame drawn right after a load is
+the picture it was.
 
     XBOX_DVD_PATH=<game.iso> waterbox/tests/run-frontend.sh
 
