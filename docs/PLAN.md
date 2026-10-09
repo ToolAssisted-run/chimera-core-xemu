@@ -972,3 +972,35 @@ Three occasions, chosen because they are the moments this repo actually moves:
 
 Not "every push": the firmware is one machine's, and a rule nobody can keep is
 worse than a rule that names its three occasions.
+
+## The GL wrapper generated again, and a build that had not seen it (2026-10-09)
+
+miniBox's generator copied every `glGetString` answer into one buffer, so a
+renderer holding its vendor and its version held the version twice (miniBox
+bd8daaf gives each name and index a place of its own). This core keeps the
+generated guest half in the repository, so it had the old one until it was
+generated again: `waterbox/generated-gl/gl-bridge-guest.cpp` is the
+generator's output at miniBox bd8daaf for the same 115 entry points.
+
+Two things came with it. The generator has answered `chimera_gl_context_id`
+itself since it learned the question, and this core's copy predated that and
+answered it in `gl-shim/gl-bridge-cshim.cpp` from a pointer kept for the
+purpose; that answer is gone, the generated one is the definition. And the
+ops header was NOT replaced: regenerated it would say the list is 752
+entries long where it says 190, the guest would then refuse any host that
+knows fewer, and the gate's own host half (`generated-gl-host`) knows 190.
+Every opcode this core uses is below 190 either way.
+
+**The build that had not seen it.** `build-package.sh` configured the guest
+(and so ran `apply-patches.sh`, which copies our sources into the tree) only
+when no build existed. On a configured tree the regenerated wrapper was
+"built", packaged, and measured on a GTX 1060 as identical to the published
+core - which it was, being the published core's wrapper. Noticed only
+because the tree was looked at. `build-package.sh` runs `apply-patches.sh`
+every time now, and the copy keeps each file's own time so that nothing
+unedited is compiled again; an edit to a copied file reaches the next
+package build (tried: `det-pow.c` touched, rebuilt).
+
+On the real new build: core gate 9 of 9, frontend gate 3 of 3; on the card,
+twelve frames after a load exact and frame 2499 of the test game the same
+picture as the published core.

@@ -36,6 +36,14 @@ mb="$(cd "$mb" && pwd)"
 
 # the guest, via xemu's own meson cross build
 [ -f "$root/build/qemu-guest/build.ninja" ] || sh "$here/setup-guest.sh" -m "$mb"
+# The driver sources and the GPU bridge's files are OURS and are copied into
+# the tree by apply-patches.sh, which setup-guest.sh runs - once, when the
+# build is configured. On a tree already configured an edit to one of them did
+# not reach this build at all: a regenerated GL wrapper was "built", packaged
+# and measured on a card before anybody noticed the tree still held the old
+# one (2026-10-09). So every package build copies them; the copy keeps each
+# file's own time, so ninja rebuilds only what was really edited.
+sh "$here/apply-patches.sh"
 ninja -C "$root/build/qemu-guest" qemu-system-i386
 cp "$root/build/qemu-guest/qemu-system-i386" "$root/build/core.wbx"
 sh "$mb/source/guest/check-wbx.sh" "$root/build/core.wbx"

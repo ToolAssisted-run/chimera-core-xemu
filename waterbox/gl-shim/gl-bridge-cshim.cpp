@@ -9,19 +9,14 @@
 
 bool chimera_gl_install(chimera_gl_bridge_fn bridge);
 
-/* Kept so the renderer can ask which real context the calls are landing on
- * (GL_OP_CONTEXT_ID); the generated wrappers keep their own copy for GL. */
-static chimera_gl_bridge_fn g_bridge_cshim;
-
 extern "C" bool chimera_gl_install_c(uint64_t addr)
 {
-    g_bridge_cshim = (chimera_gl_bridge_fn)(uintptr_t)addr;
     return chimera_gl_install((chimera_gl_bridge_fn)(uintptr_t)addr);
 }
 
-/* Which real context the calls are landing on; 0 when it cannot be told (no
- * bridge, or a host older than the question). See pgraph_gl_check_context. */
-extern "C" uint64_t chimera_gl_context_id(void)
-{
-    return g_bridge_cshim ? g_bridge_cshim(GL_OP_CONTEXT_ID, 0, 0, 0, 0, 0) : 0;
-}
+/* chimera_gl_context_id - which real context the calls are landing on, 0 when
+ * it cannot be told; see pgraph_gl_check_context - used to be answered here,
+ * from a copy of the bridge pointer kept for it. The generated guest half has
+ * answered it itself since miniBox's generator learned the question, and this
+ * core's copy of that half predated it; regenerated (2026-10-09, for the GL
+ * strings), it is the one definition. */

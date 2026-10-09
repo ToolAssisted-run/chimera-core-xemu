@@ -37,27 +37,30 @@ fi
 
 # OUR sources, copied in on every run - whichever state the patches were in -
 # so an edit to the driver reaches the build without touching the series.
+# With each file's own time (cp -p): build-package.sh runs this before every
+# build, and a copy stamped "now" would have ninja compile all of them again
+# each time.
 copy_driver()
 {
-	cp "$here/xemu-waterbox.c" "$tree/ui/xemu-waterbox.c"
-	cp "$here/xemu-savedata.c" "$tree/ui/xemu-savedata.c"
-	cp "$here/default-eeprom.c" "$tree/ui/default-eeprom.c"
-	cp "$here/guest-syscalls.c" "$tree/ui/guest-syscalls.c"
-	cp "$here/monitor-null.c" "$tree/hw/xbox/mcpx/apu/monitor-null.c"
-	cp "$here/chimera-latency.c" "$tree/block/chimera-latency.c"
-	cp "$here/dsp-jit-null.c" "$tree/hw/xbox/mcpx/apu/dsp/dsp-jit-null.c"
-	cp "$here/det-pow.c" "$tree/hw/xbox/mcpx/apu/det-pow.c"
+	cp -p "$here/xemu-waterbox.c" "$tree/ui/xemu-waterbox.c"
+	cp -p "$here/xemu-savedata.c" "$tree/ui/xemu-savedata.c"
+	cp -p "$here/default-eeprom.c" "$tree/ui/default-eeprom.c"
+	cp -p "$here/guest-syscalls.c" "$tree/ui/guest-syscalls.c"
+	cp -p "$here/monitor-null.c" "$tree/hw/xbox/mcpx/apu/monitor-null.c"
+	cp -p "$here/chimera-latency.c" "$tree/block/chimera-latency.c"
+	cp -p "$here/dsp-jit-null.c" "$tree/hw/xbox/mcpx/apu/dsp/dsp-jit-null.c"
+	cp -p "$here/det-pow.c" "$tree/hw/xbox/mcpx/apu/det-pow.c"
 	mkdir -p "$tree/hw/xbox/nv2a/pgraph/chimera-gl"
-	cp "$here"/gl-shim/gloffscreen.h "$here"/gl-shim/gl-context.c \
+	cp -p "$here"/gl-shim/gloffscreen.h "$here"/gl-shim/gl-context.c \
 	   "$here"/gl-shim/gl-bridge-cshim.cpp \
 	   "$here"/generated-gl/gl-bridge-guest.cpp "$here"/generated-gl/gl-bridge-ops.h \
 	   "$tree/hw/xbox/nv2a/pgraph/chimera-gl/"
-	cp "$root/../chimera/extern/chimera-common-minibox/source/gl/gl-bridge.h" \
+	cp -p "$root/../chimera/extern/chimera-common-minibox/source/gl/gl-bridge.h" \
 	   "$tree/hw/xbox/nv2a/pgraph/chimera-gl/" 2>/dev/null || \
-	   cp "$here/gl-shim/gl-bridge.h" "$tree/hw/xbox/nv2a/pgraph/chimera-gl/"
-	cp -r "$here/glad" "$tree/hw/xbox/nv2a/pgraph/chimera-gl/"
+	   cp -p "$here/gl-shim/gl-bridge.h" "$tree/hw/xbox/nv2a/pgraph/chimera-gl/"
+	cp -rp "$here/glad" "$tree/hw/xbox/nv2a/pgraph/chimera-gl/"
 	mkdir -p "$tree/hw/xbox/mcpx/apu/samplerate"
-	cp "$here"/samplerate/* "$tree/hw/xbox/mcpx/apu/samplerate/"
+	cp -p "$here"/samplerate/* "$tree/hw/xbox/mcpx/apu/samplerate/"
 	echo "driver sources copied"
 }
 

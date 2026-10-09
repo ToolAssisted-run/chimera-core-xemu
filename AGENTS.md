@@ -23,7 +23,14 @@ on Linux and on Windows. Detail for every step below is in `docs/BUILDING.md`.
   `guest-syscalls.c`, `chimera-latency.c`, `monitor-null.c`, `dsp-jit-null.c`
   and `det-pow.c` are copied into the xemu tree with it.
 - `waterbox/gl-shim/`, `glad/`, `generated-gl/`, `generated-gl-host/`,
-  `gl-host.c` - the GPU bridge, guest side and host side.
+  `gl-host.c` - the GPU bridge, guest side and host side. The generated
+  files are kept in the repository, so a change to miniBox's generator
+  reaches this core only when the guest half is generated again: run
+  `python3 <minibox>/source/gl/gen-gl-bridge.py waterbox/glad/include/glad/gl.h <minibox>/source/gl/gl-entry-points.txt <a scratch dir> --only waterbox/gl-entry-points.txt`
+  and copy `gl-bridge-guest.cpp` alone into `generated-gl/`. The ops header
+  there keeps the list length it was made with (190), which is what the
+  gate's own host half in `generated-gl-host/` answers with; read the diff
+  before committing.
 - `waterbox/samplerate/` - vendored, so both builds compute the same audio.
   `waterbox/run-wbx.c` - the host driver the gates run the core with.
 - `waterbox/run-gate.sh`, `waterbox/tests/run-frontend.sh` - the core gate
