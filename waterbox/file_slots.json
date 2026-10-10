@@ -1,5 +1,5 @@
 {
-  "_comment": "The core-declared file form for chimera's project wizard: an Xbox project is one DVD image. The machine can also boot straight to its dashboard from the hard disk, so the disc is optional - an empty tray is a valid machine.",
+  "_comment": "This file lists the kinds of file an Xbox project can hold. Chimera's New Project window is built from it. A project is one DVD image. The disc is optional, because the machine can also start its dashboard from the hard disk with no disc in the drive.",
   "slots": [
     {
       "id": "dvd",
@@ -10,7 +10,7 @@
         "iso",
         "xiso"
       ],
-      "help": "The game disc as an xiso image (.iso). Leave it empty and the machine boots to its dashboard from the hard disk image instead - the tray is simply open."
+      "help": "The game disc as an xiso image (.iso). Leave it empty and the machine starts its dashboard from the hard disk image, as with no disc in the drive."
     },
     {
       "id": "savedata",
@@ -23,7 +23,7 @@
         "sav",
         "dat"
       ],
-      "help": "What the hard disk starts with already saved: per-title Xbox save games, under UDATA/<titleId>/<save>/. These are the files Emulator > Export Save Data... writes, put back under the exact same relative paths. Each is mounted read-only and pinned by hash and the movie cites it, so a movie that starts from a saved game is as reproducible as one that starts from a blank disk. A name the machine does not read there (anything not under UDATA/) is refused rather than silently dropped."
+      "help": "The saved games the hard disk starts with. They are Xbox save files for each game, under UDATA/<titleId>/<save>/. These are the files that Emulator > Export Save Data... writes, and they must be put back under exactly the same paths. They are never changed. The project and the movie record exactly which files they were, so a movie that starts from a saved game can be played back by anyone who has the same files. A file that is not under UDATA/ is refused."
     }
   ]
 }
