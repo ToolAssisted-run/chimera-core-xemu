@@ -1,0 +1,1099 @@
+vulkan: the Vulkan renderer runs in the sandbox, on Chimera's Vulkan
+
+xemu's Vulkan renderer (hw/xbox/nv2a/pgraph/vk) is built into the sandboxed
+core and runs on the Vulkan device Chimera hands a core through miniBox's
+Vulkan bridge (chimera issue 248). The driver picks it when the Renderer
+setting is 'vulkan-hw'.
+
+The build. A cross build declares Vulkan itself (meson.build): the headers
+are miniBox's, behind a vulkan/vulkan.h that is the two of them
+(pgraph/vk/chimera/vulkan/vulkan.h), and the commands are the guest half of
+the bridge, generated from miniBox's list (pgraph/vk/meson.build; the option
+chimera_minibox says where miniBox is). glslang, volk, SPIRV-Reflect and the
+Vulkan Memory Allocator are built as upstream builds them. volk is kept from
+looking for a Vulkan of its own, which found the build machine's headers and
+put /usr/include in front of the sandbox's C library.
+
+No window, and no OpenGL to share the frame with (HAVE_EXTERNAL_MEMORY 0).
+The frame the display code composes is copied to a buffer and read back
+(chimera.c, nv2a_chimera_vk_read_display), the right way up and with its
+fourth byte as the game left it, as the OpenGL renderer's read gives it.
+
+No pfifo thread. Every wait for it does the pending work itself first
+(pfifo_service_pending), as the OpenGL renderer's waits do since patch 0009.
+Without that the machine stopped with every thread waiting.
+
+Mapped memory. Through the bridge no memory is coherent and a mapping is a
+copy in the machine's own memory, so:
+- the probe of the GPU's properties asks for memory that is only host
+  visible. It asked for coherent memory, found no such type, and passed
+  "none" (-1) to the driver as the type's number, which ended the frontend
+  inside a GeForce's driver;
+- the staged index, vertex and uniform data is flushed before it is copied
+  to the device, and every flush or invalidate names the bytes that matter
+  where upstream names the whole buffer (CHIMERA_VK_BYTES);
+- the buffers that stay mapped are smaller: 8 MiB of indices and 32 MiB of
+  inline vertices where upstream has 200 MiB and 1.3 GiB, 32 MiB for each
+  staging buffer where it has 64. A draw too large for them stops the
+  machine with an assertion;
+- the copy of the console's RAM that vertices are drawn from is not filled
+  when the renderer starts. All of RAM is marked as changed instead, and a
+  range is copied the first time a draw needs it.
+
+A load of the machine is a new Vulkan device. The renderer asks which device
+it is on where it is about to use one (pgraph_vk_check_context) and, when it
+has changed, lets go of everything with the bridge silent and starts again,
+as upstream does when the user changes renderer. What the GPU drew is written
+into the console's RAM before a state is taken (nv2a_chimera_vk_flush_surfaces,
+the twin of patch 0019), so the renderer made again finds it there.
+
+Being made again quickly. That start-up ran once on a desktop and runs after
+every load here: 1.0 s a load on a GeForce GTX 1060, against 0.3 s for the
+OpenGL renderer. It is about 0.35 s with: each shader's SPIR-V kept by its
+text for as long as the machine runs (glsl.c), the shader compiler started
+once and not stopped, a shader module table of four thousand entries where
+upstream has fifty thousand, depth-conversion buffers of 300 MiB where it
+has 840, and the RAM copy above.
+
+diff --git a/meson.build b/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -2393,8 +2393,16 @@
+ if host_os == 'windows'
+   vulkan = declare_dependency(compile_args: ['-DVK_USE_PLATFORM_WIN32_KHR'])
+ elif host_os == 'linux'
+-  # CHIMERA: the vk renderer is optional; headless builds have no Vulkan
+-  vulkan = get_option('opengl').disabled() ? not_found : dependency('vulkan', required: false)
++  # CHIMERA: the vk renderer is optional; headless builds have no Vulkan.
++  # In the sandbox (a cross build) Vulkan is the one Chimera hands a core:
++  # the headers come with miniBox (the include path is in the cross file's
++  # flags) and the commands go through its bridge (pgraph/vk/meson.build).
++  if meson.is_cross_build()
++    chimera_vk_headers = meson.current_source_dir() / 'hw/xbox/nv2a/pgraph/vk/chimera'
++    vulkan = declare_dependency(compile_args: ['-DCHIMERA_GUEST_VK', '-I' + chimera_vk_headers])
++  else
++    vulkan = get_option('opengl').disabled() ? not_found : dependency('vulkan', required: false)
++  endif
+ endif
+ 
+ if vulkan.found()
+@@ -2418,6 +2426,12 @@
+   if host_os == 'windows'
+     volk_opts.append_compile_args('c', '-DVK_USE_PLATFORM_WIN32_KHR=1')
+   endif
++  if meson.is_cross_build()
++    # CHIMERA: volk's own search for Vulkan finds the BUILD machine's headers
++    # and puts /usr/include in front of the sandbox's C library
++    volk_opts.add_cmake_defines({'VOLK_PULL_IN_VULKAN': false})
++    volk_opts.append_compile_args('c', '-I' + chimera_vk_headers)
++  endif
+   volk_subproj = cmake.subproject('volk', options: volk_opts)
+   volk = declare_dependency(compile_args: ['-DVK_NO_PROTOTYPES'],
+                             include_directories: volk_subproj.include_directories('volk'),
+diff --git a/meson_options.txt b/meson_options.txt
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -394,3 +394,8 @@
+        description: 'Rust support')
+ option('strict_rust_lints', type: 'boolean', value: false,
+        description: 'Enable stricter set of Rust warnings')
++
++# CHIMERA: where miniBox is, for the sandbox build's Vulkan (the bridge's
++# guest half is generated from its list; see hw/xbox/nv2a/pgraph/vk)
++option('chimera_minibox', type: 'string', value: '',
++       description: 'miniBox checkout (Chimera sandbox builds)')
+diff --git a/hw/xbox/nv2a/pgraph/vk/meson.build b/hw/xbox/nv2a/pgraph/vk/meson.build
+--- a/hw/xbox/nv2a/pgraph/vk/meson.build
++++ b/hw/xbox/nv2a/pgraph/vk/meson.build
+@@ -1,9 +1,32 @@
+ if vulkan.found()
+ 
+-specific_ss.add([volk, libglslang, vma, vulkan, spirv_reflect, 
++# CHIMERA: in the sandbox the Vulkan commands are the guest half of miniBox's
++# Vulkan bridge, a wrapper per command that hands the call to the frontend,
++# generated from the list in miniBox. volk is given its lookup in place of a
++# driver's (instance.c).
++chimera_vk = []
++if meson.is_cross_build()
++	chimera_mb = get_option('chimera_minibox')
++	if chimera_mb == ''
++		error('pass -Dchimera_minibox=<miniBox checkout>')
++	endif
++	chimera_vk_gen = custom_target('chimera-vk-bridge',
++		output: ['vk-bridge-guest.c', 'vk-bridge-ops.h', 'vk-bridge-host.inc'],
++		command: [find_program('python3'), chimera_mb / 'source/vk/gen-vk-bridge.py',
++			chimera_mb / 'extern/vulkan-headers/registry/vk.xml',
++			chimera_mb / 'source/vk/vk-entry-points.txt', '@OUTDIR@'])
++	libchimera_vk = static_library('chimera-vk',
++		[files(chimera_mb / 'source/vk/vk-guest.c'), chimera_vk_gen[0], chimera_vk_gen[1]],
++		c_args: ['-I' + chimera_mb / 'source/vk', '-I' + meson.current_build_dir()])
++	chimera_vk = declare_dependency(link_with: libchimera_vk,
++		compile_args: ['-I' + chimera_mb / 'source/vk'])
++endif
++
++specific_ss.add([volk, libglslang, vma, vulkan, spirv_reflect, chimera_vk,
+ 	files(
+ 		'blit.c',
+ 		'buffer.c',
++		'chimera.c',
+ 		'command.c',
+ 		'debug.c',
+ 		'display.c',
+diff --git a/hw/xbox/nv2a/pgraph/vk/chimera/vulkan/vulkan.h b/hw/xbox/nv2a/pgraph/vk/chimera/vulkan/vulkan.h
+new file mode 100644
+--- /dev/null
++++ b/hw/xbox/nv2a/pgraph/vk/chimera/vulkan/vulkan.h
+@@ -0,0 +1,13 @@
++/* CHIMERA: <vulkan/vulkan.h> for the sandbox build.
++ *
++ * miniBox carries the two headers its Vulkan bridge needs (vulkan_core.h and
++ * vk_platform.h) and nothing of any window system, because a sandboxed core
++ * has no window. vulkan.h proper is those two and the window systems' own
++ * headers, so this is all of it that applies here. */
++#ifndef VULKAN_H_
++#define VULKAN_H_ 1
++
++#include <vulkan/vk_platform.h>
++#include <vulkan/vulkan_core.h>
++
++#endif
+diff --git a/hw/xbox/nv2a/pgraph/vk/chimera.c b/hw/xbox/nv2a/pgraph/vk/chimera.c
+new file mode 100644
+--- /dev/null
++++ b/hw/xbox/nv2a/pgraph/vk/chimera.c
+@@ -0,0 +1,261 @@
++/*
++ * CHIMERA: the Vulkan renderer in Chimera's sandbox.
++ *
++ * Three things a desktop xemu does not need:
++ *
++ * - The device is Chimera's. The frontend hands the core one function
++ *   (SetVulkanBridge in the driver); the guest half of miniBox's Vulkan bridge
++ *   turns every Vulkan command into a call of it, and volk asks that half for
++ *   each command by name (instance.c).
++ *
++ * - There is no window and no OpenGL context to share the finished frame
++ *   with. The frame the display code composes is copied to a buffer and read
++ *   back (nv2a_chimera_vk_read_display), which is what the driver hands
++ *   Chimera as the picture.
++ *
++ * - A load of the machine is a new Vulkan device on the frontend's side, and
++ *   everything made on the old one is gone. The renderer's handles are in the
++ *   machine's memory, so a state brings them back, naming nothing. So the
++ *   renderer asks which device it is on at the head of every path that is
++ *   about to use one (pgraph_vk_check_context) and, when it has changed, lets
++ *   go of everything and starts again - as upstream does when the user changes
++ *   renderer. While it lets go nothing crosses to the frontend (the quiet
++ *   switch): each command answers "done", because what it names is another
++ *   device's and would be refused.
++ *
++ * Copyright (c) 2026 the Chimera project
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2 of the License, or (at your option) any later version.
++ */
++
++#include "qemu/osdep.h"
++#include "hw/xbox/nv2a/nv2a_int.h"
++#include "renderer.h"
++
++#ifdef CHIMERA_GUEST_VK
++
++typedef uint64_t (*chimera_vk_bridge_fn)(uint64_t op, uint64_t a, uint64_t b,
++                                         uint64_t c, uint64_t d, uint64_t e);
++bool chimera_vk_install(chimera_vk_bridge_fn bridge);
++uint64_t chimera_vk_context_id(void);
++void chimera_vk_description(char *out, uint32_t size);
++void chimera_vk_forget_mappings(void);
++
++static chimera_vk_bridge_fn s_host;
++static bool s_installed;
++static bool s_quiet;
++
++/* opcodes below 100 are the bridge's own questions (which device is this) and
++ * are answered whatever the switch says */
++static uint64_t bridge(uint64_t op, uint64_t a, uint64_t b, uint64_t c,
++                       uint64_t d, uint64_t e)
++{
++    if (s_quiet && op >= 100) {
++        return 0;
++    }
++    return s_host(op, a, b, c, d, e);
++}
++
++bool chimera_vk_try_bridge(uint64_t addr)
++{
++    s_host = (chimera_vk_bridge_fn)(uintptr_t)addr;
++    s_installed = s_host != NULL && chimera_vk_install(bridge);
++    return s_installed;
++}
++
++bool chimera_vk_available(void)
++{
++    return s_installed;
++}
++
++const char *chimera_vk_describe(void)
++{
++    static char text[256];
++    text[0] = 0;
++    if (s_installed) {
++        chimera_vk_description(text, sizeof text);
++    }
++    return text;
++}
++
++/* Which device the objects were made on. A state restores this with the rest
++ * of the machine, so after a load it is the saved session's; the live one is
++ * this session's. The flag is the frontend's word that the machine's memory
++ * was replaced (StateLoaded): a state taken before the renderer first looked
++ * carries 0 here, which then cannot vouch for what the driver holds - the
++ * same trap as the OpenGL renderer's (gl/renderer.c, chimera issue 126). */
++static uint64_t s_device;
++static bool s_state_loaded;
++
++void pgraph_vk_state_loaded(void)
++{
++    s_state_loaded = true;
++}
++
++void pgraph_vk_check_context(NV2AState *d)
++{
++    const bool after_load = s_state_loaded;
++    s_state_loaded = false;
++
++    const uint64_t live = chimera_vk_context_id();
++    if (live == 0 || live == s_device) {
++        if (live != 0) {
++            s_device = live;
++        }
++        return;
++    }
++
++    if ((s_device != 0 || after_load) && d->pgraph.vk_renderer_state != NULL) {
++        PGRAPHVkState *r = d->pgraph.vk_renderer_state;
++        fprintf(stderr, "chimera: Vulkan objects came from device %llu, now "
++                "%llu; rebuilding\n", (unsigned long long)s_device,
++                (unsigned long long)live);
++
++        /* Nothing of the old device can be fetched any more. What a surface
++         * held was written into RAM before the state was taken (the driver's
++         * StateSaving), so no surface is left to download - and one marked
++         * as needing it must not be, with the bridge silent: the download
++         * would copy the staging buffer's old bytes into the machine. */
++        SurfaceBinding *s;
++        QTAILQ_FOREACH(s, &r->surfaces, entry) {
++            s->draw_dirty = false;
++            s->download_pending = false;
++        }
++        r->in_command_buffer = false;
++        r->in_render_pass = false;
++        r->in_aux_command_buffer = false;
++        r->query_in_flight = false;
++
++        s_quiet = true;
++        pgraph_vk_chimera_finalize(d);
++        chimera_vk_forget_mappings();
++        s_quiet = false;
++        pgraph_vk_chimera_init(d);
++    }
++    s_device = live;
++}
++
++/* The finished frame, out of the machine: BGRA rows, top row first. Runs the
++ * sync upstream's window runs - the surface that scans out is composed, video
++ * overlay and all, into the display image - then copies the image to the
++ * staging buffer and reads it. Called by the driver at a frame boundary.
++ * 0 when no surface scans out: the caller shows the VGA view of RAM. */
++int nv2a_chimera_vk_read_display(uint8_t *out, int cap_w, int cap_h,
++                                 int *out_w, int *out_h)
++{
++    NV2AState *d = g_nv2a;
++    if (d == NULL || d->pgraph.vk_renderer_state == NULL) {
++        return 0;
++    }
++    PGRAPHState *pg = &d->pgraph;
++
++    pgraph_vk_check_context(d);
++    PGRAPHVkState *r = pg->vk_renderer_state;
++
++    qemu_mutex_lock(&d->pfifo.lock);
++    VGADisplayParams vga_display_params;
++    d->vga.get_params(&d->vga, &vga_display_params);
++    SurfaceBinding *surface = pgraph_vk_surface_get_within(
++        d, d->pcrtc.start + vga_display_params.line_offset);
++    if (surface == NULL || !surface->color) {
++        qemu_mutex_unlock(&d->pfifo.lock);
++        return 0;
++    }
++    surface->frame_time = pg->frame_time;
++    qemu_event_reset(&d->pgraph.sync_complete);
++    qatomic_set(&pg->sync_pending, true);
++    pfifo_kick(d);
++    qemu_mutex_unlock(&d->pfifo.lock);
++    pfifo_service_pending(d); /* CHIMERA: no pfifo thread - see pfifo.c */
++    qemu_event_wait(&d->pgraph.sync_complete);
++
++    r = pg->vk_renderer_state;
++    PGRAPHVkDisplayState *disp = &r->display;
++    const int w = disp->width, h = disp->height;
++    const VkDeviceSize bytes = (VkDeviceSize)w * h * 4;
++    StorageBuffer *staging = &r->storage_buffers[BUFFER_STAGING_DST];
++    if (disp->image == VK_NULL_HANDLE || w <= 0 || h <= 0 || w > cap_w ||
++        h > cap_h || bytes > staging->buffer_size) {
++        return 0;
++    }
++
++    VkCommandBuffer cmd = pgraph_vk_begin_single_time_commands(pg);
++    VkImageMemoryBarrier barrier = {
++        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
++        .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
++        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
++        .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
++        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
++        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
++        .image = disp->image,
++        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
++        .subresourceRange.levelCount = 1,
++        .subresourceRange.layerCount = 1,
++    };
++    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
++                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL,
++                         1, &barrier);
++    VkBufferImageCopy region = {
++        .imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
++        .imageSubresource.layerCount = 1,
++        .imageExtent = { w, h, 1 },
++    };
++    vkCmdCopyImageToBuffer(cmd, disp->image,
++                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
++                           staging->buffer, 1, &region);
++    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
++    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
++    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
++    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
++                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0,
++                         NULL, 1, &barrier);
++    pgraph_vk_end_single_time_commands(pg, cmd);
++
++    void *mapped = NULL;
++    VK_CHECK(vmaMapMemory(r->allocator, staging->allocation, &mapped));
++    vmaInvalidateAllocation(r->allocator, staging->allocation, 0, bytes);
++    /* The display image is drawn for an OpenGL texture, whose first row is
++     * the bottom one: the rows come out in the other order here. RGBA bytes
++     * become BGRA. The fourth byte is passed on as it is, as the OpenGL
++     * renderer's read does: it is what the game left there, and it is what
++     * the VGA view of RAM shows when no surface scans out (the frames right
++     * after a load), so the same frame is the same bytes either way. */
++    for (int y = 0; y < h; y++) {
++        const uint8_t *in = (const uint8_t *)mapped + (size_t)(h - 1 - y) * w * 4;
++        uint8_t *row = out + (size_t)y * w * 4;
++        for (int x = 0; x < w * 4; x += 4) {
++            row[x + 0] = in[x + 2];
++            row[x + 1] = in[x + 1];
++            row[x + 2] = in[x + 0];
++            row[x + 3] = in[x + 3];
++        }
++    }
++    vmaUnmapMemory(r->allocator, staging->allocation);
++
++    *out_w = w;
++    *out_h = h;
++    return 1;
++}
++
++/* What the GPU drew, into the machine, before a state is taken: the Vulkan
++ * twin of nv2a_chimera_flush_surfaces (gl/display.c, chimera issue 190).
++ * Under TCG a surface reaches the console's RAM only when the processor reads
++ * it; a state is the machine's memory, and a load makes the renderer again
++ * from that memory. */
++void nv2a_chimera_vk_flush_surfaces(void)
++{
++    NV2AState *d = g_nv2a;
++    if (d == NULL || d->pgraph.vk_renderer_state == NULL) {
++        return;
++    }
++    pgraph_vk_check_context(d);
++    pgraph_pre_savevm_trigger(d);
++    pgraph_pre_savevm_wait(d);
++}
++
++#endif /* CHIMERA_GUEST_VK */
+diff --git a/hw/xbox/nv2a/pgraph/vk/renderer.h b/hw/xbox/nv2a/pgraph/vk/renderer.h
+--- a/hw/xbox/nv2a/pgraph/vk/renderer.h
++++ b/hw/xbox/nv2a/pgraph/vk/renderer.h
+@@ -41,7 +41,25 @@
+ #include "constants.h"
+ #include "glsl.h"
+ 
++/* CHIMERA: in the sandbox there is no OpenGL context to share the finished
++ * frame with, and no window: the frame is copied to a buffer and read back
++ * (display.c, pgraph_vk_chimera_read_display). */
++#ifdef CHIMERA_GUEST_VK
++#define HAVE_EXTERNAL_MEMORY 0
++#else
+ #define HAVE_EXTERNAL_MEMORY 1
++#endif
++
++/* CHIMERA: how many bytes of a mapped buffer to send to the card, or to
++ * fetch back. Upstream says "all of it", which costs nothing where mapped
++ * memory is the driver's own. Through Chimera's Vulkan bridge a mapping is a
++ * copy in the machine's memory, and flushing all of a 32 or 64 MiB buffer
++ * copies all of it. */
++#ifdef CHIMERA_GUEST_VK
++#define CHIMERA_VK_BYTES(n) ((VkDeviceSize)(n))
++#else
++#define CHIMERA_VK_BYTES(n) VK_WHOLE_SIZE
++#endif
+ 
+ typedef struct QueueFamilyIndices {
+     int queue_family;
+@@ -286,6 +304,7 @@
+     int width, height;
+     int draw_time;
+ 
++#if HAVE_EXTERNAL_MEMORY
+     // OpenGL Interop
+ #ifdef WIN32
+     HANDLE handle;
+@@ -294,6 +313,7 @@
+ #endif
+     GLuint gl_memory_obj;
+     GLuint gl_texture_id;
++#endif
+ } PGRAPHVkDisplayState;
+ 
+ typedef struct ComputePipelineKey {
+@@ -428,6 +448,11 @@
+ 
+     PGRAPHVkDisplayState display;
+     PGRAPHVkComputeState compute;
++#ifdef CHIMERA_GUEST_VK
++    /* CHIMERA: the part of the copy of RAM (BUFFER_VERTEX_RAM) written since
++     * it was last sent to the card; empty when hi <= lo */
++    VkDeviceSize chimera_vram_lo, chimera_vram_hi;
++#endif
+ } PGRAPHVkState;
+ 
+ // renderer.c
+@@ -509,6 +534,20 @@
+ void pgraph_vk_init_surfaces(PGRAPHState *pg);
+ void pgraph_vk_finalize_surfaces(PGRAPHState *pg);
+ void pgraph_vk_surface_flush(NV2AState *d);
++#ifdef CHIMERA_GUEST_VK
++// chimera.c
++void pgraph_vk_check_context(NV2AState *d);
++void pgraph_vk_state_loaded(void);
++void pgraph_vk_chimera_finalize(NV2AState *d);
++void pgraph_vk_chimera_init(NV2AState *d);
++bool chimera_vk_try_bridge(uint64_t addr);
++bool chimera_vk_available(void);
++const char *chimera_vk_describe(void);
++int nv2a_chimera_vk_read_display(uint8_t *out, int cap_w, int cap_h,
++                                 int *out_w, int *out_h);
++void nv2a_chimera_vk_flush_surfaces(void);
++#endif
++
+ void pgraph_vk_process_pending_downloads(NV2AState *d);
+ void pgraph_vk_surface_download_if_dirty(NV2AState *d, SurfaceBinding *surface);
+ SurfaceBinding *pgraph_vk_surface_get_within(NV2AState *d, hwaddr addr);
+diff --git a/hw/xbox/nv2a/pgraph/vk/renderer.c b/hw/xbox/nv2a/pgraph/vk/renderer.c
+--- a/hw/xbox/nv2a/pgraph/vk/renderer.c
++++ b/hw/xbox/nv2a/pgraph/vk/renderer.c
+@@ -44,7 +44,6 @@
+ #endif
+ 
+     pgraph_vk_debug_init();
+-
+     pgraph_vk_init_instance(pg, errp);
+     if (*errp) {
+         return;
+@@ -60,8 +59,20 @@
+     pgraph_vk_init_compute(pg);
+     pgraph_vk_init_display(pg);
+ 
++#ifdef CHIMERA_GUEST_VK
++    /* CHIMERA: upstream copies all of the console's RAM into the vertex
++     * buffer here, because from now on only what changes is copied. Through
++     * the bridge that buffer is the machine's own memory, the copy is 64 MiB
++     * of it written after every load, and nearly all of it is never drawn
++     * from. So nothing is copied: all of RAM is marked as changed instead,
++     * and each range is copied the first time a draw needs it (draw.c, where
++     * the same mark is tested). */
++    memory_region_set_client_dirty(d->vram, 0, memory_region_size(d->vram),
++                                   DIRTY_MEMORY_NV2A);
++#else
+     pgraph_vk_update_vertex_ram_buffer(&d->pgraph, 0, d->vram_ptr,
+                                    memory_region_size(d->vram));
++#endif
+ 
+     pgraph_vk_determine_gpu_properties(d);
+ }
+@@ -85,6 +96,19 @@
+     pg->vk_renderer_state = NULL;
+ }
+ 
++#ifdef CHIMERA_GUEST_VK
++/* CHIMERA: for the rebuild after a load (chimera.c) */
++void pgraph_vk_chimera_finalize(NV2AState *d)
++{
++    pgraph_vk_finalize(d);
++}
++
++void pgraph_vk_chimera_init(NV2AState *d)
++{
++    pgraph_vk_init(d, &error_abort);
++}
++#endif
++
+ static void pgraph_vk_flush(NV2AState *d)
+ {
+     PGRAPHState *pg = &d->pgraph;
+@@ -92,8 +116,14 @@
+     pgraph_vk_finish(pg, VK_FINISH_REASON_FLUSH);
+     pgraph_vk_surface_flush(d);
+     pgraph_vk_mark_textures_possibly_dirty(d, 0, memory_region_size(d->vram));
++#ifdef CHIMERA_GUEST_VK
++    /* CHIMERA: marked as changed, not copied - see pgraph_vk_init */
++    memory_region_set_client_dirty(d->vram, 0, memory_region_size(d->vram),
++                                   DIRTY_MEMORY_NV2A);
++#else
+     pgraph_vk_update_vertex_ram_buffer(&d->pgraph, 0, d->vram_ptr,
+                                        memory_region_size(d->vram));
++#endif
+     for (int i = 0; i < 4; i++) {
+         pg->texture_dirty[i] = true;
+     }
+@@ -115,6 +145,9 @@
+ 
+ static void pgraph_vk_process_pending(NV2AState *d)
+ {
++#ifdef CHIMERA_GUEST_VK
++    pgraph_vk_check_context(d);
++#endif
+     PGRAPHVkState *r = d->pgraph.vk_renderer_state;
+ 
+     if (qatomic_read(&r->downloads_pending) ||
+@@ -155,6 +188,7 @@
+ 
+ static void pgraph_vk_pre_savevm_wait(NV2AState *d)
+ {
++    pfifo_service_pending(d); /* CHIMERA: no pfifo thread - see pfifo.c */
+     qemu_event_wait(&d->pgraph.vk_renderer_state->dirty_surfaces_download_complete);
+ }
+ 
+@@ -195,6 +229,7 @@
+     qatomic_set(&pg->sync_pending, true);
+     pfifo_kick(d);
+     qemu_mutex_unlock(&d->pfifo.lock);
++    pfifo_service_pending(d); /* CHIMERA: no pfifo thread - see pfifo.c */
+     qemu_event_wait(&d->pgraph.sync_complete);
+     return r->display.gl_texture_id;
+ #else
+diff --git a/hw/xbox/nv2a/pgraph/vk/instance.c b/hw/xbox/nv2a/pgraph/vk/instance.c
+--- a/hw/xbox/nv2a/pgraph/vk/instance.c
++++ b/hw/xbox/nv2a/pgraph/vk/instance.c
+@@ -56,6 +56,19 @@
+     return VK_FALSE;
+ }
+ 
++#ifdef CHIMERA_GUEST_VK
++/* CHIMERA: in the sandbox every Vulkan command is a wrapper in the guest half
++ * of miniBox's bridge. volk asks this for each command by name where it would
++ * have asked a driver's library. */
++void *chimera_vk_lookup(const char *name);
++
++static PFN_vkVoidFunction chimera_get_instance_proc_addr(VkInstance instance,
++                                                         const char *name)
++{
++    return (PFN_vkVoidFunction)chimera_vk_lookup(name);
++}
++#endif
++
+ static bool check_validation_layer_support(void)
+ {
+     uint32_t num_available_layers;
+@@ -149,7 +162,12 @@
+     PGRAPHVkState *r = pg->vk_renderer_state;
+     VkResult result;
+ 
++#ifdef CHIMERA_GUEST_VK
++    volkInitializeCustom(chimera_get_instance_proc_addr);
++    result = vkCreateInstance ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
++#else
+     result = volkInitialize();
++#endif
+     if (result != VK_SUCCESS) {
+         error_setg(errp, "volkInitialize failed");
+         return false;
+@@ -312,8 +330,12 @@
+         g_array_sized_new(FALSE, FALSE, sizeof(char *),
+                           ARRAY_SIZE(required_device_extensions));
+ 
++#ifndef CHIMERA_GUEST_VK
++    /* CHIMERA: these share the finished frame with an OpenGL context. In the
++     * sandbox there is none, and the bridge offers neither extension. */
+     g_array_append_vals(extensions, required_device_extensions,
+                         ARRAY_SIZE(required_device_extensions));
++#endif
+ 
+     return extensions;
+ }
+@@ -335,6 +357,9 @@
+ 
+ static bool check_device_support_required_extensions(VkPhysicalDevice device)
+ {
++#ifdef CHIMERA_GUEST_VK
++    return true; /* CHIMERA: none is required, see above */
++#endif
+     g_autoptr(VkExtensionPropertiesArray) available_extensions =
+         get_available_device_extensions(device);
+ 
+@@ -581,6 +606,12 @@
+         .flags = (r->memory_budget_extension_enabled ?
+                       VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT :
+                       0),
++#ifdef CHIMERA_GUEST_VK
++        /* CHIMERA: a block that holds a mapped buffer is mapped whole, and
++         * through the bridge a mapped byte is a byte of the machine's own
++         * memory, copied when the mapping is made */
++        .preferredLargeHeapBlockSize = 16 * 1024 * 1024,
++#endif
+         .vulkanApiVersion = r->vk_api_version,
+         .instance = r->instance,
+         .physicalDevice = r->physical_device,
+diff --git a/hw/xbox/nv2a/pgraph/vk/buffer.c b/hw/xbox/nv2a/pgraph/vk/buffer.c
+--- a/hw/xbox/nv2a/pgraph/vk/buffer.c
++++ b/hw/xbox/nv2a/pgraph/vk/buffer.c
+@@ -63,7 +63,16 @@
+     r->storage_buffers[BUFFER_STAGING_DST] = (StorageBuffer){
+         .alloc_info = host_alloc_create_info,
+         .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
++#ifdef CHIMERA_GUEST_VK
++        /* CHIMERA: both staging buffers stay mapped (below), and through the
++         * bridge a mapped buffer is as many bytes of the machine's memory,
++         * copied whenever the renderer is made again. Half of upstream's is
++         * room for a 2048x2048 texture with its smaller levels, and for a
++         * surface drawn at four times the console's size. */
++        .buffer_size = 4096 * 2048 * 4,
++#else
+         .buffer_size = 4096 * 4096 * 4,
++#endif
+     };
+ 
+     r->storage_buffers[BUFFER_STAGING_SRC] = (StorageBuffer){
+@@ -76,7 +85,17 @@
+         .alloc_info = device_alloc_create_info,
+         .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
++#ifdef CHIMERA_GUEST_VK
++        /* CHIMERA: this buffer and its twin are allocated again after every
++         * load of the machine, and a driver takes longer over 800 MiB than
++         * over 300. They hold a depth surface while it is packed or unpacked,
++         * eight bytes a pixel: 6144 x 6144 is the console's 2048 x 2048 at
++         * three times its size, the most this core's Internal Resolution
++         * asks for. */
++        .buffer_size = (1024 * 6) * (1024 * 6) * 8,
++#else
+         .buffer_size = (1024 * 10) * (1024 * 10) * 8,
++#endif
+     };
+ 
+     r->storage_buffers[BUFFER_COMPUTE_SRC] = (StorageBuffer){
+@@ -90,7 +109,17 @@
+         .alloc_info = device_alloc_create_info,
+         .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                  VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
++#ifdef CHIMERA_GUEST_VK
++        /* CHIMERA: the staging twin of this buffer, and of the inline vertex
++         * buffer below, stays mapped, and through the bridge a mapped buffer
++         * is as many bytes of the machine's own memory (200 MiB and 1.3 GiB
++         * at upstream's sizes). They hold what is drawn between two submits:
++         * smaller, a submit comes sooner (pgraph_vk_buffer_has_space_for).
++         * This one still holds four of the largest draws. */
++        .buffer_size = sizeof(pg->inline_elements) * 4,
++#else
+         .buffer_size = sizeof(pg->inline_elements) * 100,
++#endif
+     };
+ 
+     r->storage_buffers[BUFFER_INDEX_STAGING] = (StorageBuffer){
+@@ -114,8 +143,17 @@
+         .alloc_info = device_alloc_create_info,
+         .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
++#ifdef CHIMERA_GUEST_VK
++        /* CHIMERA: a quarter of the largest draw there can be (every one of
++         * sixteen attributes, four floats each, for half a million vertices):
++         * 32 MiB. A draw larger than this stops the machine with an
++         * assertion, where upstream has room for ten of the largest. */
++        .buffer_size = NV2A_VERTEXSHADER_ATTRIBUTES * NV2A_MAX_BATCH_LENGTH *
++                       sizeof(float),
++#else
+         .buffer_size = NV2A_VERTEXSHADER_ATTRIBUTES * NV2A_MAX_BATCH_LENGTH *
+                        4 * sizeof(float) * 10,
++#endif
+     };
+ 
+     r->storage_buffers[BUFFER_VERTEX_INLINE_STAGING] = (StorageBuffer){
+@@ -146,6 +184,14 @@
+     int buffers_to_map[] = { BUFFER_VERTEX_RAM,
+                              BUFFER_INDEX_STAGING,
+                              BUFFER_VERTEX_INLINE_STAGING,
++#ifdef CHIMERA_GUEST_VK
++                             /* CHIMERA: upstream maps these two around every
++                              * use. Through the bridge making a mapping
++                              * copies the whole buffer; kept mapped, the
++                              * later maps and unmaps only count. */
++                             BUFFER_STAGING_SRC,
++                             BUFFER_STAGING_DST,
++#endif
+                              BUFFER_UNIFORM_STAGING };
+ 
+     for (int i = 0; i < ARRAY_SIZE(buffers_to_map); i++) {
+diff --git a/hw/xbox/nv2a/pgraph/vk/display.c b/hw/xbox/nv2a/pgraph/vk/display.c
+--- a/hw/xbox/nv2a/pgraph/vk/display.c
++++ b/hw/xbox/nv2a/pgraph/vk/display.c
+@@ -153,7 +153,8 @@
+ 
+     vmaFlushAllocation(r->allocator,
+                        r->storage_buffers[BUFFER_STAGING_SRC].allocation, 0,
+-                       VK_WHOLE_SIZE);
++                       CHIMERA_VK_BYTES((VkDeviceSize)state.in_width *
++                                        state.in_height * 4));
+ 
+     vmaUnmapMemory(r->allocator,
+                    r->storage_buffers[BUFFER_STAGING_SRC].allocation);
+@@ -578,10 +579,10 @@
+         destroy_current_display_image(pg);
+     }
+ 
+-    const GLint gl_internal_format = GL_RGBA8;
+     bool use_optimal_tiling = true;
+ 
+ #if HAVE_EXTERNAL_MEMORY
++    const GLint gl_internal_format = GL_RGBA8;
+     GLint num_tiling_types;
+     glGetInternalformativ(GL_TEXTURE_2D, gl_internal_format,
+                           GL_NUM_TILING_TYPES_EXT, 1, &num_tiling_types);
+@@ -617,6 +618,10 @@
+         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+     };
+ 
++#if !HAVE_EXTERNAL_MEMORY
++    /* CHIMERA: nobody shares this image; it is copied to a buffer instead */
++    image_create_info.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
++#else
+     VkExternalMemoryImageCreateInfo external_memory_image_create_info = {
+         .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+ #ifdef WIN32
+@@ -626,6 +631,7 @@
+ #endif
+     };
+     image_create_info.pNext = &external_memory_image_create_info;
++#endif
+ 
+     VK_CHECK(vkCreateImage(r->device, &image_create_info, NULL, &d->image));
+ 
+@@ -641,6 +647,7 @@
+                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+     };
+ 
++#if HAVE_EXTERNAL_MEMORY
+     VkExportMemoryAllocateInfo export_memory_alloc_info = {
+         .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+         .handleTypes =
+@@ -652,6 +659,7 @@
+             ,
+     };
+     alloc_info.pNext = &export_memory_alloc_info;
++#endif
+ 
+     VK_CHECK(vkAllocateMemory(r->device, &alloc_info, NULL, &d->memory));
+     VK_CHECK(vkBindImageMemory(r->device, d->image, d->memory, 0));
+diff --git a/hw/xbox/nv2a/pgraph/vk/draw.c b/hw/xbox/nv2a/pgraph/vk/draw.c
+--- a/hw/xbox/nv2a/pgraph/vk/draw.c
++++ b/hw/xbox/nv2a/pgraph/vk/draw.c
+@@ -24,6 +24,9 @@
+ 
+ void pgraph_vk_draw_begin(NV2AState *d)
+ {
++#ifdef CHIMERA_GUEST_VK
++    pgraph_vk_check_context(d);
++#endif
+     PGRAPHState *pg = &d->pgraph;
+ 
+     NV2A_VK_DPRINTF("NV097_SET_BEGIN_END: 0x%x", d->pgraph.primitive_mode);
+@@ -1097,6 +1100,11 @@
+         return;
+     }
+ 
++#ifdef CHIMERA_GUEST_VK
++    /* CHIMERA: what was staged is in the machine's memory until it is sent */
++    VK_CHECK(vmaFlushAllocation(r->allocator, b_src->allocation, 0,
++                                b_src->buffer_offset));
++#endif
+     VkBufferCopy copy_region = { .size = b_src->buffer_offset };
+     vkCmdCopyBuffer(cmd, b_src->buffer, b_dst->buffer, 1, &copy_region);
+ 
+@@ -1140,9 +1148,19 @@
+ {
+     PGRAPHVkState *r = pg->vk_renderer_state;
+ 
++#ifdef CHIMERA_GUEST_VK
++    /* CHIMERA: only what was written since the last time (see renderer.h) */
++    if (r->chimera_vram_hi > r->chimera_vram_lo) {
++        VK_CHECK(vmaFlushAllocation(
++            r->allocator, r->storage_buffers[BUFFER_VERTEX_RAM].allocation,
++            r->chimera_vram_lo, r->chimera_vram_hi - r->chimera_vram_lo));
++    }
++    r->chimera_vram_lo = r->chimera_vram_hi = 0;
++#else
+     VK_CHECK(vmaFlushAllocation(
+         r->allocator, r->storage_buffers[BUFFER_VERTEX_RAM].allocation, 0,
+         VK_WHOLE_SIZE));
++#endif
+ 
+     VkBufferMemoryBarrier barrier = {
+         .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+diff --git a/hw/xbox/nv2a/pgraph/vk/surface.c b/hw/xbox/nv2a/pgraph/vk/surface.c
+--- a/hw/xbox/nv2a/pgraph/vk/surface.c
++++ b/hw/xbox/nv2a/pgraph/vk/surface.c
+@@ -48,6 +48,7 @@
+     qemu_mutex_lock(&d->pfifo.lock);
+     pfifo_kick(d);
+     qemu_mutex_unlock(&d->pfifo.lock);
++    pfifo_service_pending(d); /* CHIMERA: no pfifo thread - see pfifo.c */
+     qemu_event_wait(&d->pgraph.vk_renderer_state->dirty_surfaces_download_complete);
+ 
+     qemu_mutex_lock(&d->pgraph.lock);
+@@ -57,6 +58,7 @@
+     qemu_mutex_lock(&d->pfifo.lock);
+     pfifo_kick(d);
+     qemu_mutex_unlock(&d->pfifo.lock);
++    pfifo_service_pending(d); /* CHIMERA: no pfifo thread - see pfifo.c */
+     qemu_event_wait(&d->pgraph.flush_complete);
+ 
+     qemu_mutex_lock(&d->pfifo.lock);
+@@ -453,7 +455,9 @@
+ 
+     vmaInvalidateAllocation(r->allocator,
+                             r->storage_buffers[BUFFER_STAGING_DST].allocation,
+-                            0, VK_WHOLE_SIZE);
++                            0, CHIMERA_VK_BYTES((VkDeviceSize)surface->width *
++                                                surface->fmt.bytes_per_pixel *
++                                                surface->height));
+ 
+     memcpy_image(gl_read_buf, mapped_memory_ptr, surface->pitch,
+                  surface->width * surface->fmt.bytes_per_pixel,
+@@ -504,6 +508,7 @@
+         qatomic_set(&d->pgraph.vk_renderer_state->downloads_pending, true);
+         pfifo_kick(d);
+         qemu_mutex_unlock(&d->pfifo.lock);
++        pfifo_service_pending(d); /* CHIMERA: no pfifo thread - see pfifo.c */
+         qemu_event_wait(&d->pgraph.vk_renderer_state->downloads_complete);
+     }
+ }
+@@ -575,6 +580,7 @@
+         qatomic_set(&r->downloads_pending, true);
+         pfifo_kick(d);
+         qemu_mutex_unlock(&d->pfifo.lock);
++        pfifo_service_pending(d); /* CHIMERA: no pfifo thread - see pfifo.c */
+         qemu_event_wait(&r->downloads_complete);
+     }
+ }
+@@ -1016,7 +1022,8 @@
+                  surface->width * surface->fmt.bytes_per_pixel, surface->pitch,
+                  surface->height);
+ 
+-    vmaFlushAllocation(r->allocator, copy_buffer->allocation, 0, VK_WHOLE_SIZE);
++    vmaFlushAllocation(r->allocator, copy_buffer->allocation, 0,
++                       CHIMERA_VK_BYTES(uploaded_image_size));
+     vmaUnmapMemory(r->allocator, copy_buffer->allocation);
+ 
+     VkCommandBuffer cmd = pgraph_vk_begin_single_time_commands(pg);
+@@ -1578,6 +1585,9 @@
+ void pgraph_vk_surface_update(NV2AState *d, bool upload, bool color_write,
+                               bool zeta_write)
+ {
++#ifdef CHIMERA_GUEST_VK
++    pgraph_vk_check_context(d);
++#endif
+     PGRAPHState *pg = &d->pgraph;
+     PGRAPHVkState *r = pg->vk_renderer_state;
+ 
+diff --git a/hw/xbox/nv2a/pgraph/vk/texture.c b/hw/xbox/nv2a/pgraph/vk/texture.c
+--- a/hw/xbox/nv2a/pgraph/vk/texture.c
++++ b/hw/xbox/nv2a/pgraph/vk/texture.c
+@@ -545,7 +545,7 @@
+ 
+     vmaFlushAllocation(r->allocator,
+                        r->storage_buffers[BUFFER_STAGING_SRC].allocation, 0,
+-                       VK_WHOLE_SIZE);
++                       CHIMERA_VK_BYTES(buffer_offset));
+ 
+     vmaUnmapMemory(r->allocator,
+                    r->storage_buffers[BUFFER_STAGING_SRC].allocation);
+@@ -988,7 +988,7 @@
+ 
+     vmaFlushAllocation(r->allocator,
+                        r->storage_buffers[BUFFER_STAGING_SRC].allocation, 0,
+-                       VK_WHOLE_SIZE);
++                       CHIMERA_VK_BYTES(texture_data_size));
+ 
+     vmaUnmapMemory(r->allocator,
+                    r->storage_buffers[BUFFER_STAGING_SRC].allocation);
+diff --git a/hw/xbox/nv2a/pgraph/vk/vertex.c b/hw/xbox/nv2a/pgraph/vk/vertex.c
+--- a/hw/xbox/nv2a/pgraph/vk/vertex.c
++++ b/hw/xbox/nv2a/pgraph/vk/vertex.c
+@@ -62,6 +62,15 @@
+ 
+     nv2a_profile_inc_counter(NV2A_PROF_GEOM_BUFFER_UPDATE_1);
+     memcpy(r->storage_buffers[BUFFER_VERTEX_RAM].mapped + offset, data, size);
++#ifdef CHIMERA_GUEST_VK
++    if (r->chimera_vram_hi <= r->chimera_vram_lo) {
++        r->chimera_vram_lo = offset;
++        r->chimera_vram_hi = offset + size;
++    } else {
++        r->chimera_vram_lo = MIN(r->chimera_vram_lo, offset);
++        r->chimera_vram_hi = MAX(r->chimera_vram_hi, offset + size);
++    }
++#endif
+ 
+     bitmap_set(r->uploaded_bitmap, start_bit, nbits);
+ }
+diff --git a/hw/xbox/nv2a/pgraph/vk/gpuprops.c b/hw/xbox/nv2a/pgraph/vk/gpuprops.c
+--- a/hw/xbox/nv2a/pgraph/vk/gpuprops.c
++++ b/hw/xbox/nv2a/pgraph/vk/gpuprops.c
+@@ -289,9 +289,21 @@
+         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+         .allocationSize = host_mem_requirements.size,
+         .memoryTypeIndex =
++#ifdef CHIMERA_GUEST_VK
++            /* CHIMERA: through Chimera's Vulkan bridge no memory is coherent,
++             * so asking for it finds no type, and "no type" (-1) went to the
++             * driver as the type's number: a software driver took it, and a
++             * GeForce's read past its table and ended the whole frontend. The
++             * buffer is mapped after the card has written it, and making a
++             * mapping fetches what the memory holds, so nothing more is
++             * needed for it to be read. */
++            pgraph_vk_get_memory_type(pg, host_mem_requirements.memoryTypeBits,
++                                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT),
++#else
+             pgraph_vk_get_memory_type(pg, host_mem_requirements.memoryTypeBits,
+                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
++#endif
+     };
+ 
+     VkDeviceMemory cpu_buffer_memory;
+diff --git a/hw/xbox/nv2a/pgraph/vk/glsl.c b/hw/xbox/nv2a/pgraph/vk/glsl.c
+--- a/hw/xbox/nv2a/pgraph/vk/glsl.c
++++ b/hw/xbox/nv2a/pgraph/vk/glsl.c
+@@ -130,6 +130,25 @@
+                             .general_constant_matrix_vector_indexing = 1,
+                         } };
+ 
++#ifdef CHIMERA_GUEST_VK
++/* CHIMERA: the compiler is started once and never stopped. The renderer is
++ * made again after every load of the machine, and stopping glslang throws
++ * away the tables of built-in names it then parses again for the next
++ * shader: 75 ms a load for the stop alone. It holds nothing of the device. */
++static bool s_chimera_glslang_started;
++
++void pgraph_vk_init_glsl_compiler(void)
++{
++    if (!s_chimera_glslang_started) {
++        glslang_initialize_process();
++        s_chimera_glslang_started = true;
++    }
++}
++
++void pgraph_vk_finalize_glsl_compiler(void)
++{
++}
++#else
+ void pgraph_vk_init_glsl_compiler(void)
+ {
+     glslang_initialize_process();
+@@ -139,10 +158,56 @@
+ {
+     glslang_finalize_process();
+ }
++#endif
++
++static GByteArray *compile_glsl_to_spv(glslang_stage_t stage,
++                                       const char *glsl_source);
++
++#ifdef CHIMERA_GUEST_VK
++/* CHIMERA: what each shader compiled to, kept for as long as the machine runs.
++ *
++ * After every load of the machine the renderer is made again on a new Vulkan
++ * device (chimera.c), and with it every shader it had: some fifty a frame in
++ * the console's boot animation, twelve milliseconds each through glslang -
++ * more than half of what a load cost. What glslang makes of a text does not
++ * depend on the device, so the SPIR-V is kept by the text it came from, and
++ * only the shader modules are made again. The table is the machine's own
++ * memory and is in its states like everything else. */
++static GHashTable *s_chimera_spv;
++#endif
+ 
+ GByteArray *pgraph_vk_compile_glsl_to_spv(glslang_stage_t stage,
+                                           const char *glsl_source)
+ {
++#ifdef CHIMERA_GUEST_VK
++    if (s_chimera_spv == NULL) {
++        s_chimera_spv = g_hash_table_new_full(
++            g_str_hash, g_str_equal, g_free,
++            (GDestroyNotify)g_byte_array_unref);
++    }
++    g_autofree char *key = g_strdup_printf("%d\n%s", (int)stage, glsl_source);
++    GByteArray *kept = g_hash_table_lookup(s_chimera_spv, key);
++    if (kept != NULL) {
++        return g_byte_array_ref(kept);
++    }
++    GByteArray *spv = compile_glsl_to_spv(stage, glsl_source);
++    if (spv != NULL) {
++        if (g_hash_table_size(s_chimera_spv) >= 4096) {
++            /* a game that never stops making new shaders: start over */
++            g_hash_table_remove_all(s_chimera_spv);
++        }
++        g_hash_table_insert(s_chimera_spv, g_steal_pointer(&key),
++                            g_byte_array_ref(spv));
++    }
++    return spv;
++#else
++    return compile_glsl_to_spv(stage, glsl_source);
++#endif
++}
++
++static GByteArray *compile_glsl_to_spv(glslang_stage_t stage,
++                                       const char *glsl_source)
++{
+     const glslang_input_t input = {
+         .language = GLSLANG_SOURCE_GLSL,
+         .stage = stage,
+diff --git a/hw/xbox/nv2a/pgraph/vk/shaders.c b/hw/xbox/nv2a/pgraph/vk/shaders.c
+--- a/hw/xbox/nv2a/pgraph/vk/shaders.c
++++ b/hw/xbox/nv2a/pgraph/vk/shaders.c
+@@ -386,7 +386,16 @@
+     r->shader_cache.post_node_evict = shader_cache_entry_post_evict;
+ 
+     /* FIXME: Make this configurable */
++#ifdef CHIMERA_GUEST_VK
++    /* CHIMERA: this table is made, and walked again to be let go of, every
++     * time the renderer is made again after a load: 75 ms a load at
++     * upstream's fifty thousand entries. The compiled shaders themselves are
++     * kept elsewhere (glsl.c), so an entry pushed out of a smaller table
++     * costs a shader module, not a compilation. */
++    const size_t shader_module_cache_size = 4 * 1024;
++#else
+     const size_t shader_module_cache_size = 50 * 1024;
++#endif
+     lru_init(&r->shader_module_cache);
+     r->shader_module_cache_entries =
+         g_malloc_n(shader_module_cache_size, sizeof(ShaderModuleCacheEntry));

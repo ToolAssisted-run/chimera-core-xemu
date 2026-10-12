@@ -58,7 +58,9 @@ SHA-256 and kept in `build/deps-src`, so it is fetched once:
 - `build-deps.sh` copies the host's Linux UAPI headers (`/usr/include/linux`,
   `asm-generic` and the x86_64 `asm`) into `build/guest-deps/include`.
 - xemu's own meson fetches the subprojects it needs as wraps when it is set
-  up (`docs/PLAN.md`, "Build facts discovered so far", lists them).
+  up (`docs/PLAN.md`, "Build facts discovered so far", lists them). The
+  sandbox build fetches four more for the Vulkan renderer: glslang, volk,
+  SPIRV-Reflect and the Vulkan Memory Allocator.
 - When miniBox builds its C++ guest toolchain it fetches the GCC source that
   matches the host compiler (about 84 MB) to build libstdc++ for the guest.
 
@@ -174,6 +176,14 @@ runs `build-deps.sh` when the guest's zlib, glib or pixman is missing, applies
 the patches, and runs xemu's configure for a static cross build. The files it
 writes hold machine-local paths; they live under the ignored `build/`. The
 result is `build/qemu-guest/qemu-system-i386`, which is the core.
+
+The sandbox build compiles xemu's Vulkan renderer too. `setup-guest.sh`
+gives the configure two things for it: miniBox's Vulkan headers on the
+include path (`<miniBox>/extern/vulkan-headers/include`) and
+`-Dchimera_minibox=<miniBox>`, from which the build generates the guest half
+of miniBox's Vulkan bridge (`source/vk/gen-vk-bridge.py`). It needs a miniBox
+that has `source/vk` (Chimera 4ca6e30 or later). The native reference does
+not build the Vulkan renderer.
 
 ## Build the package
 
@@ -308,6 +318,16 @@ Legs, all byte for byte:
   core untold (`CHIMERA_NO_STATE_SAVING=1`) the first is not. Needs the same
   as gl:rebuild-at-zero, and a Chimera whose `chimera-run` has
   `--settle-probe` (4c029b1 or later).
+
+- vk:bridge, vk:picture, vk:rerecord, vk:picture-after-load - the Vulkan
+  renderer (the Renderer setting's `vulkan-hw`) on the console's boot
+  animation: it comes up on a Vulkan device, frame 260 is the picture OpenGL
+  draws, a state saved and loaded around every frame leaves the memory and
+  the picture of a run that only takes the states, and six frames drawn
+  right after a load are the pictures they were. They go through
+  `chimera-run` and need what gl:rebuild-at-zero needs, plus a Vulkan driver
+  on this computer. One that draws on the processor will do:
+  `sudo apt-get install libvulkan1 mesa-vulkan-drivers`. SKIP otherwise.
 
 The full local run that `docs/PLAN.md` gives:
 

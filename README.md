@@ -5,8 +5,8 @@ waterbox core, built from [xemu](https://xemu.app) - itself a fork of QEMU.
 The whole machine (a 733MHz Pentium III, the NV2A GPU, the MCPX APU with its
 DSPs, four Duke controllers on a real USB bus) runs deterministically inside
 the miniBox sandbox: byte-for-byte reproducible boots, savestates that are
-arena snapshots, and a GPU bridge that lets xemu's own OpenGL renderer draw
-on a real driver when a picture is wanted over portability.
+arena snapshots, and a GPU bridge that lets xemu's own OpenGL or Vulkan
+renderer draw on a real driver when a picture is wanted over portability.
 
 Unlike every other Chimera core, this one drives xemu's OWN configure/meson
 (QEMU's code generation makes a curated source list infeasible): a native

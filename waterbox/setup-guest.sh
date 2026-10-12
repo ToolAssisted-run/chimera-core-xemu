@@ -121,10 +121,11 @@ cd "$root/build/qemu-guest"
 "$root/extern/xemu/configure" \
 	--cross-prefix="$bin/x86_64-chimera-linux-musl-" \
 	--target-list=i386-softmmu \
-	--extra-cflags="-mcmodel=large -mstack-protector-guard=global -fno-stack-protector -fno-pic -fno-pie -fcf-protection=none -DXBOX=1 -DCHIMERA_GUEST "-D__thread=" -I$deps/include -I$mb/extern/emulibc -I$mb/source/guest/include -I$mb/extern/jsmn -Wno-error" \
+	--extra-cflags="-mcmodel=large -mstack-protector-guard=global -fno-stack-protector -fno-pic -fno-pie -fcf-protection=none -DXBOX=1 -DCHIMERA_GUEST "-D__thread=" -I$deps/include -I$mb/extern/emulibc -I$mb/source/guest/include -I$mb/extern/jsmn -I$mb/extern/vulkan-headers/include -Wno-error" \
 	--extra-ldflags="-static -no-pie" \
 	--enable-pixman --static --disable-werror \
 	--disable-sdl --disable-opengl --disable-gtk --disable-vnc \
 	--disable-slirp --disable-docs --disable-tools --disable-guest-agent \
-	--audio-drv-list= --disable-kvm --disable-xen --with-coroutine=ucontext
+	--audio-drv-list= --disable-kvm --disable-xen --with-coroutine=ucontext \
+	-Dchimera_minibox="$mb"
 echo "guest build configured: ninja -C build/qemu-guest qemu-system-i386"

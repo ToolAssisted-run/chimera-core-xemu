@@ -1004,3 +1004,92 @@ package build (tried: `det-pow.c` touched, rebuilt).
 On the real new build: core gate 9 of 9, frontend gate 3 of 3; on the card,
 twelve frames after a load exact and frame 2499 of the test game the same
 picture as the published core.
+
+## The Vulkan renderer (2026-10-12; chimera issue 248)
+
+The Renderer setting has a second value, `vulkan-hw`: xemu's own Vulkan
+renderer, on the Vulkan device Chimera hands a core through miniBox's Vulkan
+bridge. `opengl-hw` is still the default. All of it is `patches/0020` and
+about sixty lines of the driver; the patch's own text says what each part is
+for.
+
+**What it took, in the order it was met.**
+
+- *The build.* xemu's meson builds glslang, volk, SPIRV-Reflect and the
+  Vulkan Memory Allocator as subprojects, and that works in the sandbox
+  build as it is. Only Vulkan itself is declared by hand (the headers are
+  miniBox's), and volk had to be kept from finding the build machine's
+  headers, which put `/usr/include` in front of the sandbox's C library.
+- *No window.* Upstream shares the finished frame with an OpenGL context
+  that draws the window. Here the frame is copied to a buffer and read back.
+- *No pfifo thread.* The Vulkan renderer's waits had to do the pending work
+  themselves, as the OpenGL renderer's do since patch 0009; without that the
+  machine stopped with every thread waiting.
+- *Mapped memory.* Upstream keeps 200 MiB of indices and 1.3 GiB of inline
+  vertices mapped, which costs a desktop nothing until it is touched.
+  Through the bridge a mapping is as many bytes of the machine's own memory,
+  so those are 8 and 32 MiB here, and a draw too large for them stops the
+  machine with an assertion. Nothing has reached that yet.
+- *On the real card, a crash that software Vulkan did not show.* The probe
+  of the GPU's properties asked for coherent memory, found no such type
+  (the bridge has none), and passed "none" (-1) to the driver as the type's
+  number. lavapipe took it; a GeForce's driver read past its table and ended
+  the whole frontend.
+
+**After a load.** Every load is a new Vulkan device, and the renderer is
+made again from the console's RAM, as the OpenGL one is: what the GPU drew
+is written into RAM when Chimera says a state is about to be taken.
+
+That start-up ran once on a desktop and runs after every load here. On the
+GTX 1060 it cost 1.0 s a load at first. What it was made of, largest first:
+compiling the shaders again (their SPIR-V is now kept by their text); the
+bridge's copy of 176 MiB of buffers that held nothing yet (miniBox c1ee3e6
+leaves that out, for every core); a copy of the console's 64 MiB of RAM
+into the vertex buffer (RAM is marked as changed instead, and copied as it
+is drawn from); stopping and starting the shader compiler; a table of fifty
+thousand shader modules made and walked. Timed with the processor's cycle
+counter around each piece of the start-up - not with counters kept in the
+machine's memory, which every load puts back to what the state held.
+
+**Measured on a GeForce GTX 1060** (Windows, `chimera-run.exe`, Chimera
+f122581, a quiet machine).
+
+- Soulcalibur II, 3000 frames with a Start press at frame 1500 (into the
+  demo fight): 77.9 s with Vulkan, 73.0 s with OpenGL. Five pictures
+  compared, two of them consecutive frames of the fight: identical, pixel for
+  pixel. The console's RAM differs in 527 bytes.
+- Prince of Persia: The Sands of Time, 4600 frames with no input: 63.7 s
+  with Vulkan, 65.2 s with OpenGL. Four pictures: identical but for one
+  pixel in one of them. RAM differs in 345,158 bytes.
+- So the renderer is part of the machine, as the graphics driver already
+  was: what the GPU draws goes back into the console's RAM, and the two do
+  not round every pixel alike. A movie made with one renderer is not
+  promised to play back with the other.
+- Frames drawn right after a load: in Soulcalibur II's fight, twelve of
+  twelve are the frames first drawn (six from states of frames nobody had
+  looked at), and with the core left untold the first is wrong, as it should
+  be. In Prince of Persia four of six are exact and two differ faintly
+  (half a percent of pixels by more than 8 levels) - frame for frame what
+  the OpenGL renderer does there, with the same numbers.
+- Eight rewinds of 250 frames end on the memory and the picture of a run
+  that only takes the states.
+- A load costs 0.31 s with Vulkan and 0.19 s with OpenGL (400 frames with a
+  state saved and loaded around every one, against 400 that only save).
+- At 2x and 3x Internal Resolution the boot animation is OpenGL's picture,
+  and Soulcalibur II's fight is the same scene but less sharp than
+  OpenGL's (3% of pixels differ at 2x, 35% at 3x). xemu's Vulkan renderer
+  uses a drawn surface as a texture at its drawn size only when the texture
+  is the whole surface; otherwise it goes through the console's RAM at the
+  console's size. That is upstream's renderer and was not changed.
+
+**What is not proven.** Two games; no game played with input beyond one
+press; nothing above 3x; the 128 MiB memory setting; Chimera's window (only
+its command-line runner). A draw larger than the smaller buffers has not
+been met and would stop the machine.
+
+**The test script** has four new checks, `vk:bridge`, `vk:picture`,
+`vk:rerecord` and `vk:picture-after-load`, on the boot animation through
+`chimera-run`. Each was broken once on purpose and seen to fail. They need
+the firmware and a disc, so CI skips them, like the two `gl:` checks
+beside them.
+

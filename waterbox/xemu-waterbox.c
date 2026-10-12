@@ -60,6 +60,15 @@ int nv2a_chimera_read_display(uint8_t *out, int cap_w, int cap_h,
                               int *out_w, int *out_h);
 #ifdef CHIMERA_GUEST
 bool chimera_gl_try_bridge(uint64_t addr);
+/* The Vulkan renderer, on the Vulkan device Chimera hands a core
+ * (pgraph/vk/chimera.c). It exists in the sandbox build only. */
+bool chimera_vk_try_bridge(uint64_t addr);
+bool chimera_vk_available(void);
+const char *chimera_vk_describe(void);
+int nv2a_chimera_vk_read_display(uint8_t *out, int cap_w, int cap_h,
+                                 int *out_w, int *out_h);
+void nv2a_chimera_vk_flush_surfaces(void);
+void pgraph_vk_state_loaded(void);
 #endif
 
 static void idle_patch_try(void);
@@ -632,6 +641,15 @@ ECL_EXPORT void SetGpuBridge(uint64_t addr)
     }
 }
 
+/* The second bridge: Vulkan. Chimera offers both to a core that exports
+ * both, and the Renderer setting picks (Init). */
+ECL_EXPORT void SetVulkanBridge(uint64_t addr)
+{
+    if (!chimera_vk_try_bridge(addr)) {
+        fprintf(stderr, "chimera: the Vulkan bridge was offered and refused\n");
+    }
+}
+
 ECL_EXPORT const char *GetLoadError(void)
 {
     return g_loadError;
@@ -675,6 +693,9 @@ ECL_EXPORT void StateLoaded(void)
     }
     tb_flush__exclusive_or_serial();
     pgraph_gl_state_loaded();
+#ifdef CHIMERA_GUEST
+    pgraph_vk_state_loaded();
+#endif
 }
 
 /* Told by the host before every state it takes of the machine (a greenzone
@@ -688,6 +709,11 @@ ECL_EXPORT void StateSaving(void)
     if (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_OPENGL) {
         nv2a_chimera_flush_surfaces();
     }
+#ifdef CHIMERA_GUEST
+    if (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_VULKAN) {
+        nv2a_chimera_vk_flush_surfaces();
+    }
+#endif
 }
 
 ECL_EXPORT int Init(void)
@@ -703,6 +729,26 @@ ECL_EXPORT int Init(void)
 
     g_config.general.show_welcome = false;
     chimera_choose_renderer(chimera_gl_available());
+    {
+        /* The Renderer setting. 'vulkan-hw' is xemu's Vulkan renderer; it has
+         * nothing to fall back on, so without a Vulkan device the project
+         * does not start, and says why. */
+        char want[16] = "opengl-hw";
+        wbx_setting_str("renderer", want, sizeof want);
+        if (strcmp(want, "vulkan-hw") == 0) {
+            if (!chimera_vk_available()) {
+                snprintf(g_loadError, sizeof g_loadError,
+                         "The Renderer setting is 'vulkan-hw', and this Chimera "
+                         "handed the core no Vulkan device. It needs a graphics "
+                         "driver with Vulkan and Chimera's Development build "
+                         "4ca6e302 or later. Set Renderer to 'opengl-hw' to "
+                         "run without it.");
+                return 0;
+            }
+            g_config.display.renderer = CONFIG_DISPLAY_RENDERER_VULKAN;
+            fprintf(stderr, "chimera vk: %s\n", chimera_vk_describe());
+        }
+    }
 
     /* How large the GPU draws every surface, as the `internalResolution`
      * setting: xemu's own display.quality.surface_scale, read by the GL
@@ -915,6 +961,17 @@ ECL_EXPORT uint32_t *GetVideoBgra(void)
             return g_video;
         }
     }
+#ifdef CHIMERA_GUEST
+    if (g_config.display.renderer == CONFIG_DISPLAY_RENDERER_VULKAN) {
+        int w = 0, h = 0;
+        if (nv2a_chimera_vk_read_display((uint8_t *)g_video, CHIMERA_MAX_W,
+                                         CHIMERA_MAX_H, &w, &h)) {
+            g_videoWidth = w;
+            g_videoHeight = h;
+            return g_video;
+        }
+    }
+#endif
 
     QemuConsole *con = qemu_console_lookup_by_index(0);
     DisplaySurface *surf = con ? qemu_console_surface(con) : NULL;

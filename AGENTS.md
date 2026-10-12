@@ -33,6 +33,11 @@ on Linux and on Windows. Detail for every step below is in `docs/BUILDING.md`.
   before committing.
 - `waterbox/samplerate/` - vendored, so both builds compute the same audio.
   `waterbox/run-wbx.c` - the host driver the gates run the core with.
+- The Vulkan renderer has no directory here: it is upstream's
+  (`extern/xemu/hw/xbox/nv2a/pgraph/vk`), changed by `patches/0020`, which
+  also adds `chimera.c` there (the bridge, the rebuild after a load, the
+  frame readback). The guest half of miniBox's Vulkan bridge is generated at
+  build time from miniBox (`-Dchimera_minibox`, passed by `setup-guest.sh`).
 - `waterbox/run-gate.sh`, `waterbox/tests/run-frontend.sh` - the core gate
   and the frontend gate.
 - `waterbox/waterbox.config`, `file_slots.json`, `default_keybinds.json`,

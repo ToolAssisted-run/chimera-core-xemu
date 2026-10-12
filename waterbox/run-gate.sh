@@ -540,4 +540,105 @@ else
 	fi
 fi
 
+# ---- the Vulkan renderer (chimera issue 248) --------------------------------
+#
+# The Renderer setting's "vulkan-hw": xemu's Vulkan renderer, on the Vulkan
+# device Chimera hands the core (patches/0020). This core's own runner has no
+# Vulkan to hand over, so these checks go through chimera-run, like the two
+# above, and need what they need: XBOX_DVD_PATH, the firmware, chimera-run and
+# the installed package - and a Vulkan driver on this computer. One that draws
+# on the processor will do (Mesa's lavapipe: libvulkan1 mesa-vulkan-drivers).
+#
+# What they hold, on the console's boot animation:
+#  - the renderer comes up on a Vulkan device and runs 270 frames;
+#  - frame 260 is the picture OpenGL draws (two renderers do not round every
+#    edge alike: a few pixels in a thousand may differ), and a frame from
+#    earlier in the animation is told apart;
+#  - a state saved and loaded around every frame - every load is a new Vulkan
+#    device, and the whole renderer is made again - leaves the memory and the
+#    picture of a run that only takes the states. The log has to show the
+#    renderer made again at least 250 times, or nothing was held. (Not "of a
+#    plain run": taking a state writes what the GPU drew into the console's
+#    RAM, as it does under OpenGL, so a run that takes states and one that
+#    takes none differ in RAM by design.)
+#  - six frames drawn right after one load are the pictures they were, and
+#    with the core left untold (CHIMERA_NO_STATE_SAVING=1) they are not.
+#
+# What they do NOT stand in for: the boot animation is not a game and lavapipe
+# is not a graphics card. What games drew on a GTX 1060 is in docs/PLAN.md.
+vk_legs="vk:bridge vk:picture vk:rerecord vk:picture-after-load"
+if [ -z "$crunroot" ] || [ -z "${XBOX_DVD_PATH:-}" ]; then
+	for leg in $vk_legs; do
+		echo "SKIP: $leg leg - needs XBOX_DVD_PATH, plus chimera-run and an installed xemu.chimeraCore (set CHIMERA_ROOT)"
+	done
+else
+	vk=$(leg_dir vulkan)
+	printf '[Input]\nLogKey:#\n' > "$vk/none.txt"
+	vkrun() { # <name> <renderer> <movie> <extra args...>: the log in $vk/<name>.log
+		vkname="$1"; vkrenderer="$2"; vkmovie="$3"; shift 3
+		CHIMERA_PICTURE_TRACE=1 timeout 1800 "$crunroot/build/meson-linux/chimera-run" \
+			"$crunroot/build/Cores/xemu.chimeraCore" "$XBOX_DVD_PATH" "$vkmovie" --gpu \
+			--settings "{\"renderer\":\"$vkrenderer\"}" \
+			--firmware "mcpx=$fw/MCPX Boot ROM/mcpx_1.0.bin" \
+			--firmware "bios=$fw/Flash ROM (BIOS)/Complex_4627v1.03.bin" \
+			--firmware "hdd=$fw/Hard Disk/xbox_hdd.qcow2" "$@" > "$vk/$vkname.log" 2>&1 || true
+	}
+	same_picture() { python3 "$here/tests/check-same-picture.py" "$1" "$2" 2>&1 | head -1; }
+	vkrun record opengl-hw "$vk/none.txt" --frames 270 --record "$vk/movie.txt"
+	vkrun gl opengl-hw "$vk/movie.txt" --frames 270 --screenshot "260=$vk/gl.tga"
+	vkrun straight vulkan-hw "$vk/movie.txt" --frames 270 --screenshot "200=$vk/early.tga" --screenshot "260=$vk/vk.tga"
+	vk_card="$(sed -n 's/^chimera vk: \(.*(Vulkan [^)]*)\).*/\1/p' "$vk/straight.log" | head -1)"
+	if [ ! -s "$vk/movie.txt" ]; then
+		for leg in $vk_legs; do echo "FAIL: $leg leg - could not record a movie to run (see $vk/record.log)"; done; fail=1
+	elif grep -q "handed the core no Vulkan device" "$vk/straight.log"; then
+		for leg in $vk_legs; do echo "SKIP: $leg leg - this chimera-run handed the core no Vulkan device (no Vulkan driver here, or a Chimera older than 4ca6e30)"; done
+	else
+		if [ -n "$vk_card" ] && grep -q "^frames=270" "$vk/straight.log"; then
+			echo "PASS: vk:bridge leg - 270 frames of the boot animation on a Vulkan device ($vk_card)"
+		else
+			echo "FAIL: vk:bridge leg - device [${vk_card:-none made}], $(grep -m1 '^frames=' "$vk/straight.log" || echo 'the run did not finish') (see $vk/straight.log)"; fail=1
+		fi
+
+		# "&& rc=0 || rc=$?": this script stops at the first command that fails
+		# (set -e), and "the pictures differ" is an answer here, not a failure
+		same="$(same_picture "$vk/gl.tga" "$vk/vk.tga")"
+		python3 "$here/tests/check-same-picture.py" "$vk/gl.tga" "$vk/vk.tga" > /dev/null 2>&1 && same_rc=0 || same_rc=$?
+		other="$(same_picture "$vk/vk.tga" "$vk/early.tga")"
+		python3 "$here/tests/check-same-picture.py" "$vk/vk.tga" "$vk/early.tga" > /dev/null 2>&1 && other_rc=0 || other_rc=$?
+		if [ "$same_rc" = 0 ] && [ "$other_rc" = 1 ]; then
+			echo "PASS: vk:picture leg - Vulkan draws what OpenGL draws at frame 260 (${same%% (*}); frame 200 is told apart (${other%% (*})"
+		else
+			echo "FAIL: vk:picture leg - against OpenGL at frame 260: $same; frame 200, which must differ: $other"; fail=1
+		fi
+
+		every="--greenzone 4096 --greenzone-period 1 --greenzone-max-stride 1"
+		vkrun told vulkan-hw "$vk/movie.txt" --frames 270 $every --screenshot "260=$vk/told.tga" --dump "System RAM=$vk/told.ram"
+		vkrun rr vulkan-hw "$vk/movie.txt" --frames 270 --rerecord --screenshot "260=$vk/rr.tga" --dump "System RAM=$vk/rr.ram"
+		made="$(grep -c 'chimera: Vulkan objects came from device' "$vk/rr.log" || true)"
+		made_told="$(grep -c 'chimera: Vulkan objects came from device' "$vk/told.log" || true)"
+		if [ ! -s "$vk/rr.ram" ] || ! cmp -s "$vk/told.ram" "$vk/rr.ram" || ! cmp -s "$vk/told.tga" "$vk/rr.tga"; then
+			echo "FAIL: vk:rerecord leg - a state saved and loaded around every frame is not the run that only takes the states: memory $(cmp -s "$vk/told.ram" "$vk/rr.ram" && echo same || echo differs), picture $(cmp -s "$vk/told.tga" "$vk/rr.tga" && echo same || echo differs) (see $vk/rr.log)"; fail=1
+		elif [ "$made" -lt 250 ] || [ "$made_told" -ne 0 ]; then
+			echo "FAIL: vk:rerecord leg - the renderer was made again $made times in the run with the loads and $made_told in the one without, where 250 or more and 0 are expected: the loads did not happen, or the log changed (see $vk/rr.log)"; fail=1
+		else
+			echo "PASS: vk:rerecord leg - 270 frames with a state saved and loaded around every one leave the memory and the picture of a run that only takes the states; the renderer was made again $made times"
+		fi
+
+		vkprobe="--frames 260 $every --settle-probe 240,6"
+		vkrun probe vulkan-hw "$vk/movie.txt" $vkprobe
+		( export CHIMERA_NO_STATE_SAVING=1; vkrun untold vulkan-hw "$vk/movie.txt" $vkprobe )
+		if grep -q "^usage: chimera-run" "$vk/probe.log"; then
+			echo "SKIP: vk:picture-after-load leg - this chimera-run has no --settle-probe (Chimera older than 4c029b1)"
+		elif ! grep -q "^pictrace: load, on frame 240:" "$vk/probe.log" || ! grep -q "^pictrace: load, on frame 240:" "$vk/untold.log"; then
+			echo "FAIL: vk:picture-after-load leg - the load did not land on the frame before the ones compared, so nothing was measured (see $vk/probe.log)"; fail=1
+		elif ! grep -q "^settle-probe: the picture is wrong up to drawn frame" "$vk/untold.log"; then
+			echo "FAIL: vk:picture-after-load leg - the control drew every frame right with the core untold: this scene does not show the loss, or the engine told it anyway (see $vk/untold.log)"; fail=1
+		elif ! grep -q "^settle-probe: every frame drawn after the load is the picture it was" "$vk/probe.log"; then
+			echo "FAIL: vk:picture-after-load leg - $(grep -m1 '^settle-probe: the picture is wrong' "$vk/probe.log" || echo 'the probe gave no verdict') (see $vk/probe.log)"; fail=1
+		else
+			echo "PASS: vk:picture-after-load leg - six frames drawn right after a load are the pictures they were; with the core left untold the first is not"
+		fi
+	fi
+fi
+
 exit $fail

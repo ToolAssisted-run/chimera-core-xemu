@@ -2,7 +2,7 @@
   "package": "xemu",
   "effectiveTerms": "GPL-2.0-or-later",
   "commercialUse": "allowed under the GPL",
-  "note": "The built core combines this repository's integration with xemu, itself a fork of QEMU; both are GPL-2.0-or-later and the whole is distributed under those terms. The vendored pieces are permissive: glad is generated code under MIT/Apache-2.0 terms, libsamplerate is BSD-2-Clause, the deterministic powf/pow are musl's (MIT), and the NV2A vertex shader translator is MIT.",
+  "note": "The built core combines this repository's integration with xemu, itself a fork of QEMU; both are GPL-2.0-or-later and the whole is distributed under those terms. The vendored pieces are permissive: glad is generated code under MIT/Apache-2.0 terms, libsamplerate is BSD-2-Clause, the deterministic powf/pow are musl's (MIT), and the NV2A vertex shader translator is MIT. The Vulkan renderer adds glslang, volk, SPIRV-Reflect and the Vulkan Memory Allocator, all permissive, and is compiled against the Khronos Vulkan headers that come with Chimera's sandbox.",
   "components": [
     {
       "name": "chimera-core-xemu (integration)",
@@ -55,6 +55,40 @@
       "license": "MIT",
       "url": "https://github.com/xemu-project/xemu",
       "file": "extern/xemu/hw/xbox/nv2a/pgraph/thirdparty/gloffscreen/gloffscreen.h"
+    },
+    {
+      "name": "glslang",
+      "license": "BSD-3-Clause, BSD-2-Clause, MIT and Apache-2.0, with its generated parser under GPL-3.0 with the Bison exception",
+      "url": "https://github.com/KhronosGroup/glslang",
+      "file": "extern/xemu/subprojects/glslang/LICENSE.txt",
+      "note": "Fetched by xemu's build at the revision its wrap file names. The compiler that turns the GLSL xemu writes for its Vulkan renderer into SPIR-V, without the optimiser and without HLSL. Used only when the Renderer setting is vulkan-hw."
+    },
+    {
+      "name": "volk",
+      "license": "MIT",
+      "url": "https://github.com/zeux/volk",
+      "file": "extern/xemu/subprojects/volk/LICENSE.md",
+      "note": "Fetched by xemu's build. The table of Vulkan commands xemu's renderer calls through; in the sandbox it is filled from Chimera's Vulkan bridge."
+    },
+    {
+      "name": "SPIRV-Reflect",
+      "license": "Apache-2.0",
+      "url": "https://github.com/KhronosGroup/SPIRV-Reflect",
+      "file": "extern/xemu/subprojects/SPIRV-Reflect/LICENSE",
+      "note": "Fetched by xemu's build. Reads the layout of the shaders the Vulkan renderer compiles."
+    },
+    {
+      "name": "Vulkan Memory Allocator",
+      "license": "MIT",
+      "url": "https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator",
+      "file": "extern/xemu/subprojects/VulkanMemoryAllocator/LICENSE.txt",
+      "note": "Fetched by xemu's build. Used only when the Renderer setting is vulkan-hw."
+    },
+    {
+      "name": "Vulkan-Headers",
+      "license": "Apache-2.0 or MIT",
+      "url": "https://github.com/KhronosGroup/Vulkan-Headers",
+      "note": "The Khronos headers the Vulkan renderer is compiled against. They are not in this repository: the build takes them from miniBox, Chimera's sandbox (extern/vulkan-headers there, with its licence texts)."
     }
   ]
 }
