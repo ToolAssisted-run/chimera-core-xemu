@@ -1,0 +1,40 @@
+diff --git a/hw/xbox/nv2a/ptimer.c b/hw/xbox/nv2a/ptimer.c
+--- a/hw/xbox/nv2a/ptimer.c
++++ b/hw/xbox/nv2a/ptimer.c
+@@ -137,14 +137,36 @@
+               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + diff_ns);
+ }
+ 
++/* CHIMERA: firings of the alarm, for the core's test script (chimera#330) */
++uint64_t nv2a_ptimer_firings;
++
+ static void ptimer_alarm_fired(void *opaque)
+ {
+     NV2AState *d = (NV2AState *)opaque;
++    nv2a_ptimer_firings++;
+     uint64_t reg_now = get_reg_time(d);
+ 
+     if (is_alarm_reached(reg_now, d->ptimer.alarm_time)) {
+         d->ptimer.pending_interrupts |= NV_PTIMER_INTR_0_ALARM;
+         d->ptimer.alarm_time = advance_alarm_epoch(d->ptimer.alarm_time);
++        /* CHIMERA: the alarm compares the low 32 bits of the time, so its
++         * next crossing is in the first epoch after now. When the guest has
++         * set the time far ahead - the Xbox BIOS does, at boot - the alarm
++         * was left hundreds of millions of epochs behind and crept forward
++         * one epoch per firing: 220 million firings in one frame, ten
++         * seconds and more of host time (chimera#330). Put it in now's
++         * epoch at once, and the next one if that has passed: the state the
++         * firings would have reached, with the one interrupt they raise. */
++        if (is_alarm_reached(reg_now, d->ptimer.alarm_time)) {
++            uint64_t caught_up =
++                ((reg_now & ~PTIMER_REG_TIME_LOW_MASK) |
++                 (d->ptimer.alarm_time & PTIMER_REG_TIME_LOW_MASK)) &
++                PTIMER_REG_TIME_MASK;
++            if (is_alarm_reached(reg_now, caught_up)) {
++                caught_up = advance_alarm_epoch(caught_up);
++            }
++            d->ptimer.alarm_time = caught_up;
++        }
+         nv2a_update_irq(d);
+     }
+ 

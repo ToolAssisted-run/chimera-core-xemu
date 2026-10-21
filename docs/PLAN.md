@@ -1093,3 +1093,33 @@ been met and would stop the machine.
 the firmware and a disc, so CI skips them, like the two `gl:` checks
 beside them.
 
+
+## 2026-10-21: the GPU timer's alarm catches up at once (chimera#330)
+
+Halo was stopped at frame 3 with "the core did not finish a frame in 20
+seconds" on the reporters' machines (an RTX 3060 with an i7-14700K, an RTX
+2080 SUPER with a Ryzen 7 3800X), and booted on Chimera builds from before
+2026-10-19, when the frame watchdog came. Frame 3 is where the BIOS boots,
+and it took about ten seconds of host time on the GTX 1060 machine here too.
+
+Sampling where the stopped guest was (a temporary print in miniBox's stop
+handler, with the code addresses on the guest stack, read with addr2line)
+put every sample in `timerlist_run_timers`, firing the NV2A PTIMER alarm.
+Counters showed 220,438,927 firings in frame 3, all at one virtual instant.
+The BIOS sets the GPU's clock far ahead (TIME reads 0x0d23a18f_00000080
+after it), while the alarm was left in an early 32-bit epoch (0x3e6_ffffffe0).
+On each firing `ptimer_alarm_fired` moves the alarm forward one epoch, which
+is still in the past, so it fires again - 220 million times until it passes
+the clock. The hardware compares the low 32 bits of the time, so the alarm's
+next crossing is in the first epoch after now.
+
+Patch 0021 puts the alarm there at once when it is still behind after the
+step: the state the firings reached, with the one interrupt they raised. The
+pictures of a 7,200-frame Halo boot to its main menu are the same, frame for
+frame at four points, as before the patch; the boot frame now takes a moment,
+and 120 frames run with a frame limit of 0.3 seconds.
+
+Test: `boot:ptimer`. The native reference counts the alarm's firings when
+CHIMERA_PTIMER_FIRINGS is set; the gate's first native run must stay at or
+below 100,000 in its frames. Without the patch 10 frames reported
+220,438,927; with it, 1 in 10 frames and 17 in 60.

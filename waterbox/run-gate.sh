@@ -155,13 +155,30 @@ fail=0
 base=$(leg_dir base)
 
 for i in A B; do
-	XEMU_BASE_PATH="$run" CHIMERA_FRAMES="$frames" \
+	XEMU_BASE_PATH="$run" CHIMERA_FRAMES="$frames" CHIMERA_PTIMER_FIRINGS=1 \
 		CHIMERA_STATE_OUT="$base/state-nat-$i.bin" \
 		CHIMERA_AUDIO_OUT="$base/audio-nat-$i.s16" \
 		timeout 590 "$nat" -config_path "$run/xemu.toml" $QEMU_ARGS \
 		> "$base/leg-nat-$i.log" 2>&1 || { echo "native leg $i died"; tail -3 "$base/leg-nat-$i.log"; fail=1; }
 	nat_log_ok "$base/leg-nat-$i.log" || { echo "native leg $i ran without its firmware (see log)"; fail=1; }
 done
+# The GPU's timer alarm (chimera#330). At boot the BIOS sets the GPU's clock
+# far ahead, and the alarm, left in an early 32-bit epoch, was stepped forward
+# one epoch per firing: 220 million firings in frame 3, ten seconds and more
+# of host time with no sign of life, and Chimera stopped the frame as stuck.
+# Patch 0021 puts the alarm in the current epoch at once. The native run says
+# how often the alarm fired (CHIMERA_PTIMER_FIRINGS).
+#
+# NEGATIVE CONTROL, measured 2026-10-21: without patch 0021 the native run
+# of 10 frames reported 220438927 firings, and with it 1 (17 in 60 frames).
+firings="$(sed -n 's/^ptimer firings \([0-9]*\)$/\1/p' "$base/leg-nat-A.log" | tail -1)"
+if [ -z "$firings" ]; then
+	echo "FAIL: boot:ptimer - the native run said nothing about the GPU timer's alarm (see $base/leg-nat-A.log)"; fail=1
+elif [ "$firings" -gt 100000 ]; then
+	echo "FAIL: boot:ptimer - the GPU timer's alarm fired $firings times in $frames frames: it is being stepped forward one epoch at a time again"; fail=1
+else
+	echo "PASS: boot:ptimer - the GPU timer's alarm fired $firings times in $frames frames (220 million in frame 3 alone before patch 0021)"
+fi
 # -s before cmp, on every leg below as well: two EMPTY state files compare
 # equal, so a machine that stopped serialising its state would have read as
 # "native deterministic" and then as "native == sandbox" - two passes on

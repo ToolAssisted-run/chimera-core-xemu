@@ -296,6 +296,9 @@ does not run it.
 
 Legs, all byte for byte:
 
+- boot:ptimer - the GPU's timer alarm fires a handful of times while the
+  machine boots, not once per 32-bit epoch (chimera#330: 220 million in
+  frame 3 before patch 0021).
 - native deterministic - two native runs leave the same machine state.
 - native == sandbox - the sandboxed core leaves that same state.
 - audio - the two native runs and the sandbox produce the same samples. That

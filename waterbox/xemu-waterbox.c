@@ -518,6 +518,9 @@ static void run_one_frame(void)
     }
 }
 
+/* how often the GPU's timer alarm fired (hw/xbox/nv2a/ptimer.c, patch 0021) */
+extern uint64_t nv2a_ptimer_firings;
+
 static void run_frames(long frames)
 {
     frame_machinery_init();
@@ -594,6 +597,13 @@ static void run_frames(long frames)
                 fclose(f);
             }
         }
+    }
+
+    /* CHIMERA_PTIMER_FIRINGS: how often the GPU's timer alarm fired - the
+     * test script's check that the boot no longer steps the alarm forward
+     * one 32-bit epoch per firing (chimera#330: 220 million in frame 3) */
+    if (getenv("CHIMERA_PTIMER_FIRINGS")) {
+        fprintf(stderr, "ptimer firings %" PRIu64 "\n", nv2a_ptimer_firings);
     }
 }
 
