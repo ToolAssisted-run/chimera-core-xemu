@@ -1123,3 +1123,11 @@ Test: `boot:ptimer`. The native reference counts the alarm's firings when
 CHIMERA_PTIMER_FIRINGS is set; the gate's first native run must stay at or
 below 100,000 in its frames. Without the patch 10 frames reported
 220,438,927; with it, 1 in 10 frames and 17 in 60.
+
+The full test run that went with it (`XBOX_DVD_PATH` = Halo, `XBOX_GPU=1`,
+1200 frames, lavapipe for Vulkan): 13 passed and 1 failed. The failure is the
+input step: Halo does not read the pad in frames 1000 to 1200, and START held
+there leaves the same RAM with the core from before this change as well, so
+the step wants another disc. (The commit message of the fix, written while
+the run was still going, counted 12 and the two last Vulkan steps as not
+reached; both passed.)
