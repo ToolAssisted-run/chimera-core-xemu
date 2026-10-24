@@ -24,6 +24,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* Opcodes below 100 are the bridge talking about itself; 100 and up are the
  * generated GL entry points, numbered by the master list (see README.md). */
@@ -37,23 +38,64 @@ enum {
 	 * otherwise refuses to start rather than calling into a hole. */
 	GL_OP_LIST_LENGTH = 3,
 
-	/* Which real context the calls are landing on. The names every GL object
-	 * is are handed out by one context and live in emulated memory, so a
-	 * whole-machine savestate carries them into a session whose context is
-	 * gone; comparing this against the one an object came from is the only way
-	 * to notice, and rebuilding is the answer (see pgraph_gl_check_context).
-	 * Zero when there is no bridge or the host is older than the question. */
-	GL_OP_CONTEXT_ID = 4
+	/* Which context this is. Every GL object a renderer holds is a NAME the
+	 * driver handed out, and those names live in guest memory - so they go
+	 * into a savestate, and come back in a session where they mean nothing:
+	 * the context that owned them is gone, every call naming one is refused,
+	 * and the guest is never told. A renderer that remembers this number
+	 * alongside its objects can see that for itself, and rebuild them.
+	 *
+	 * Any two contexts differ; a host too old to know the question answers 0,
+	 * which a guest must read as "cannot tell" rather than as a context. */
+	GL_OP_CONTEXT_ID = 4,
+
+	/* A buffer's size, for a shadow of a whole mapping (glMapBuffer): a = the
+	 * target (b = 0) or the buffer's name (b = 1). A host too old to know the
+	 * question answers 0, and the guest maps without a shadow.
+	 *
+	 * Shadows (2026-10-19): a mapping the guest flushes or unmaps is a buffer
+	 * of the guest's own, not the driver's memory. The generated map wrappers
+	 * pass it in b and its size in c; a host that shadows fills it (when the
+	 * guest may read it or the unmap copies it all back), copies it to the
+	 * driver on each flush and on the unmap, and answers it - one that
+	 * does not answers the driver's pointer, and the guest frees its buffer.
+	 * The unmap wrappers pass in b where the host writes the shadow it gives
+	 * back, for the guest to free. A persistent map not flushed explicitly
+	 * keeps the driver's pointer (see SHADOWED_MAPS in gen-gl-bridge.py). */
+	GL_OP_BUFFER_SIZE = 5,
+
+	/* Where the guest keeps the highest name of each kind the driver has
+	 * given it: a = a struct ChimeraGlNameMarks in guest memory, b = its
+	 * size. The table is the guest's own memory, so every state carries it.
+	 * After a load the host takes every name up to these marks again, empty,
+	 * in the fresh context it gives the guest, so no new object can get a
+	 * number the restored machine still holds - whichever process the state
+	 * was taken in. The host's own list of the names it saw made covers a
+	 * load in the process that took the state; a state taken by another
+	 * process (a project opened again) holds names this one never saw, and
+	 * a renderer deleting one by its old number deleted an object it had
+	 * just made (chimera#367). A host too old to know the question says it
+	 * has no case for it, and the guest goes on as before. */
+	GL_OP_NAME_MARKS = 6
 };
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-/* The id above, fetched across the bridge. Zero when it cannot be told. */
-uint64_t chimera_gl_context_id(void);
-#ifdef __cplusplus
-}
-#endif
+/* The kinds of GL name, one namespace each, in the host's order. Programs and
+ * shaders share one. */
+enum {
+	CHIMERA_GL_NAME_TEXTURE, CHIMERA_GL_NAME_BUFFER, CHIMERA_GL_NAME_FRAMEBUFFER,
+	CHIMERA_GL_NAME_RENDERBUFFER, CHIMERA_GL_NAME_SAMPLER, CHIMERA_GL_NAME_QUERY,
+	CHIMERA_GL_NAME_VERTEX_ARRAY, CHIMERA_GL_NAME_PIPELINE, CHIMERA_GL_NAME_TRANSFORM_FEEDBACK,
+	CHIMERA_GL_NAME_PROGRAM,
+	CHIMERA_GL_NAME_KINDS
+};
+
+#define CHIMERA_GL_NAME_MARKS_MAGIC 0x4B52414Du /* "MARK" */
+
+struct ChimeraGlNameMarks {
+	uint32_t magic;      /* CHIMERA_GL_NAME_MARKS_MAGIC */
+	uint32_t kinds;      /* how many of high[] the guest keeps */
+	uint32_t high[16];   /* the highest name of each kind ever handed to it */
+};
 
 struct GlVersionArgs {
 	uint64_t out;    /* guest pointer to a char buffer */
@@ -68,3 +110,33 @@ struct GlClearTestArgs {
 /* The callback's shape, as the sandbox defines it. */
 typedef uint64_t (*chimera_gl_bridge_fn)(uint64_t op, uint64_t a, uint64_t b,
                                          uint64_t c, uint64_t d, uint64_t e);
+
+/* The two entry points the generated guest half provides.
+ *
+ * Declared with C linkage because the half that CALLS them is not always C++:
+ * a Rust guest reaches its renderer's loader through the C ABI, and a core
+ * written in C would too. The generated file includes this header, so the
+ * definitions take this linkage.
+ */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Point the generated wrappers at the host's callback. Returns false when the
+ * host's opcode list is shorter than the one this core was built against. */
+bool chimera_gl_install(chimera_gl_bridge_fn bridge);
+
+/* What a loader asks for: the wrapper for an entry point, or null when this
+ * core does not carry one - which is what a driver answers for a call it does
+ * not have. */
+void *chimera_gl_lookup(const char *name);
+
+/* Which context the calls are landing on (GL_OP_CONTEXT_ID). Zero when there
+ * is no bridge, or the host is older than the question. A renderer that stores
+ * this next to its objects can tell, after a savestate load, that the objects
+ * it remembers were another context's - and rebuild rather than draw nothing. */
+uint64_t chimera_gl_context_id(void);
+
+#ifdef __cplusplus
+}
+#endif

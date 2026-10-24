@@ -4,7 +4,7 @@
 
 /* How many entry points the MASTER list holds. A guest built
  * against a longer one than the host has refuses to start. */
-#define CHIMERA_GL_OP_LIST_LENGTH 190
+#define CHIMERA_GL_OP_LIST_LENGTH 752
 
 /* void glActiveTexture(GLenum texture) */
 #define CHIMERA_GL_OP_glActiveTexture 100

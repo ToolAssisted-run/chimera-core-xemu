@@ -7,12 +7,76 @@
 #include <glad/gl.h>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "gl-bridge.h"
 #include "gl-bridge-ops.h"
 
 static chimera_gl_bridge_fn g_bridge;
+
+/* The shadows of mapped buffers (SHADOWED_MAPS in the generator): memory of
+ * the guest's own, aligned as a driver's mapping is. */
+static bool chimera_gl_shadows(GLbitfield access)
+{
+	if ((access & GL_MAP_PERSISTENT_BIT) == 0) return true;   /* unmapped before it is used */
+	/* persistent: shadowed only when its writes are flushed explicitly */
+	return (access & GL_MAP_COHERENT_BIT) == 0 && (access & GL_MAP_FLUSH_EXPLICIT_BIT) != 0 && (access & GL_MAP_WRITE_BIT) != 0;
+}
+/* A shadow's size is kept in the 64 bytes before it. One freed shadow is kept
+ * for the next map of a like size: a renderer that maps and unmaps every frame
+ * would otherwise be given new memory each time, and fault in every page of
+ * it. It is the guest's memory, so a state holds it like any other. */
+static void *chimera_gl_spare;
+static uint64_t chimera_gl_shadow_size(void *p)
+{
+	return *(uint64_t *)((char *)p - 64);
+}
+static void *chimera_gl_shadow_new(uint64_t size)
+{
+	const uint64_t need = (size + 63) & ~(uint64_t)63;
+	if (chimera_gl_spare != nullptr)
+	{
+		const uint64_t has = chimera_gl_shadow_size(chimera_gl_spare);
+		if (has >= need && has / 2 <= need)
+		{
+			void *p = chimera_gl_spare;
+			chimera_gl_spare = nullptr;
+			return p;
+		}
+	}
+	void *base = nullptr;
+	if (posix_memalign(&base, 64, (size_t)(need + 64)) != 0) return nullptr;
+	*(uint64_t *)base = need;
+	return (char *)base + 64;
+}
+/* The highest name of each kind the driver has handed this guest
+ * (GL_OP_NAME_MARKS): guest memory, so every state holds it, and the host
+ * reads it after a load to keep those numbers from new objects. */
+static struct ChimeraGlNameMarks g_name_marks = { CHIMERA_GL_NAME_MARKS_MAGIC, CHIMERA_GL_NAME_KINDS, { 0 } };
+static void chimera_gl_mark(unsigned kind, const GLuint *names, GLsizei n)
+{
+	if (names == nullptr || kind >= CHIMERA_GL_NAME_KINDS) return;
+	for (GLsizei i = 0; i < n; i++)
+		if (names[i] > g_name_marks.high[kind]) g_name_marks.high[kind] = names[i];
+}
+
+static void chimera_gl_shadow_free(void *p)
+{
+	if (p == nullptr) return;
+	if (chimera_gl_spare == nullptr)
+	{
+		chimera_gl_spare = p;
+		return;
+	}
+	void *drop = p;
+	if (chimera_gl_shadow_size(p) > chimera_gl_shadow_size(chimera_gl_spare))
+	{
+		drop = chimera_gl_spare;   /* the larger one is kept */
+		chimera_gl_spare = p;
+	}
+	std::free((char *)drop - 64);
+}
 
 /* Where the strings glGetString and glGetStringi answer with are kept.
  *
@@ -252,14 +316,18 @@ static void GLAD_API_PTR w_glCompileShader(GLuint shader)
 
 static GLuint GLAD_API_PTR w_glCreateProgram(void)
 {
-	return (GLuint)g_bridge(CHIMERA_GL_OP_glCreateProgram, 0, 0, 0, 0, 0);
+	const GLuint chimera_r = (GLuint)g_bridge(CHIMERA_GL_OP_glCreateProgram, 0, 0, 0, 0, 0);
+	chimera_gl_mark(CHIMERA_GL_NAME_PROGRAM, &chimera_r, 1);
+	return (GLuint)chimera_r;
 }
 
 static GLuint GLAD_API_PTR w_glCreateShader(GLenum type)
 {
 	struct ChimeraGlArgs_glCreateShader chimera_a;
 	chimera_a.type = type;
-	return (GLuint)g_bridge(CHIMERA_GL_OP_glCreateShader, (uint64_t)(uintptr_t)&chimera_a, 0, 0, 0, 0);
+	const GLuint chimera_r = (GLuint)g_bridge(CHIMERA_GL_OP_glCreateShader, (uint64_t)(uintptr_t)&chimera_a, 0, 0, 0, 0);
+	chimera_gl_mark(CHIMERA_GL_NAME_PROGRAM, &chimera_r, 1);
+	return (GLuint)chimera_r;
 }
 
 static void GLAD_API_PTR w_glCullFace(GLenum mode)
@@ -449,6 +517,7 @@ static void GLAD_API_PTR w_glGenBuffers(GLsizei n, GLuint * buffers)
 	chimera_a.n = n;
 	chimera_a.buffers = buffers;
 	g_bridge(CHIMERA_GL_OP_glGenBuffers, (uint64_t)(uintptr_t)&chimera_a, 0, 0, 0, 0);
+	chimera_gl_mark(CHIMERA_GL_NAME_BUFFER, buffers, n);
 }
 
 static void GLAD_API_PTR w_glGenFramebuffers(GLsizei n, GLuint * framebuffers)
@@ -457,6 +526,7 @@ static void GLAD_API_PTR w_glGenFramebuffers(GLsizei n, GLuint * framebuffers)
 	chimera_a.n = n;
 	chimera_a.framebuffers = framebuffers;
 	g_bridge(CHIMERA_GL_OP_glGenFramebuffers, (uint64_t)(uintptr_t)&chimera_a, 0, 0, 0, 0);
+	chimera_gl_mark(CHIMERA_GL_NAME_FRAMEBUFFER, framebuffers, n);
 }
 
 static void GLAD_API_PTR w_glGenQueries(GLsizei n, GLuint * ids)
@@ -465,6 +535,7 @@ static void GLAD_API_PTR w_glGenQueries(GLsizei n, GLuint * ids)
 	chimera_a.n = n;
 	chimera_a.ids = ids;
 	g_bridge(CHIMERA_GL_OP_glGenQueries, (uint64_t)(uintptr_t)&chimera_a, 0, 0, 0, 0);
+	chimera_gl_mark(CHIMERA_GL_NAME_QUERY, ids, n);
 }
 
 static void GLAD_API_PTR w_glGenRenderbuffers(GLsizei n, GLuint * renderbuffers)
@@ -473,6 +544,7 @@ static void GLAD_API_PTR w_glGenRenderbuffers(GLsizei n, GLuint * renderbuffers)
 	chimera_a.n = n;
 	chimera_a.renderbuffers = renderbuffers;
 	g_bridge(CHIMERA_GL_OP_glGenRenderbuffers, (uint64_t)(uintptr_t)&chimera_a, 0, 0, 0, 0);
+	chimera_gl_mark(CHIMERA_GL_NAME_RENDERBUFFER, renderbuffers, n);
 }
 
 static void GLAD_API_PTR w_glGenTextures(GLsizei n, GLuint * textures)
@@ -481,6 +553,7 @@ static void GLAD_API_PTR w_glGenTextures(GLsizei n, GLuint * textures)
 	chimera_a.n = n;
 	chimera_a.textures = textures;
 	g_bridge(CHIMERA_GL_OP_glGenTextures, (uint64_t)(uintptr_t)&chimera_a, 0, 0, 0, 0);
+	chimera_gl_mark(CHIMERA_GL_NAME_TEXTURE, textures, n);
 }
 
 static void GLAD_API_PTR w_glGenVertexArrays(GLsizei n, GLuint * arrays)
@@ -489,6 +562,7 @@ static void GLAD_API_PTR w_glGenVertexArrays(GLsizei n, GLuint * arrays)
 	chimera_a.n = n;
 	chimera_a.arrays = arrays;
 	g_bridge(CHIMERA_GL_OP_glGenVertexArrays, (uint64_t)(uintptr_t)&chimera_a, 0, 0, 0, 0);
+	chimera_gl_mark(CHIMERA_GL_NAME_VERTEX_ARRAY, arrays, n);
 }
 
 static GLenum GLAD_API_PTR w_glGetError(void)
@@ -563,7 +637,10 @@ static void GLAD_API_PTR w_glGetShaderiv(GLuint shader, GLenum pname, GLint * pa
 
 static const GLubyte *GLAD_API_PTR w_glGetString(GLenum name)
 {
-	static char buffer[4096];
+	/* 64 KiB: an extension list is longer than 4 KiB on a desktop driver
+	 * (NVIDIA's runs to 10 KB and more), and was cut at 4095 bytes - the
+	 * extensions past the cut were simply not there (2026-10-18) */
+	static char buffer[65536];
 	const char *kept;
 	struct ChimeraGlArgs_glGetString chimera_a;
 	chimera_a.name = name;
@@ -576,7 +653,10 @@ static const GLubyte *GLAD_API_PTR w_glGetString(GLenum name)
 
 static const GLubyte *GLAD_API_PTR w_glGetStringi(GLenum name, GLuint index)
 {
-	static char buffer[4096];
+	/* 64 KiB: an extension list is longer than 4 KiB on a desktop driver
+	 * (NVIDIA's runs to 10 KB and more), and was cut at 4095 bytes - the
+	 * extensions past the cut were simply not there (2026-10-18) */
+	static char buffer[65536];
 	const char *kept;
 	struct ChimeraGlArgs_glGetStringi chimera_a;
 	chimera_a.name = name;
@@ -1096,6 +1176,9 @@ bool chimera_gl_install(chimera_gl_bridge_fn bridge)
 	}
 
 	g_bridge = bridge;
+	/* where the marks are; a host that does not ask about them says it has no
+	 * case for the opcode, once, and nothing changes */
+	bridge(GL_OP_NAME_MARKS, (uint64_t)(uintptr_t)&g_name_marks, sizeof g_name_marks, 0, 0, 0);
 	glad_glActiveTexture = w_glActiveTexture;
 	glad_glAttachShader = w_glAttachShader;
 	glad_glBeginQuery = w_glBeginQuery;

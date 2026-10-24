@@ -1131,3 +1131,24 @@ there leaves the same RAM with the core from before this change as well, so
 the step wants another disc. (The commit message of the fix, written while
 the run was still going, counted 12 and the two last Vulkan steps as not
 reached; both passed.)
+
+## The GL names a state holds (chimera#367, 2026-10-24)
+
+miniBox's generator (96762cf, b7bc1a2) makes the guest keep the highest GL
+name of each kind it has been given in its own memory, so every state holds
+it, and tell the host where it is (GL_OP_NAME_MARKS). After a load Chimera
+keeps every number up to those marks from new objects, which covers a state
+taken by another process (a project opened again). This core keeps its
+generated files in the repository, so they were generated again:
+`generated-gl/gl-bridge-guest.cpp` (it also gains the mapped-buffer helpers
+of 2026-10-19, unused here: xemu maps no buffers) and the gate's own host
+half in `generated-gl-host/`, for the same 190 entry points, which now
+answers the new opcode with nothing (and gains the guards for a function the
+driver does not supply). `waterbox/gl-shim/gl-bridge.h`, the copy the build
+falls back to when no Chimera is beside this repository (CI), is miniBox's
+again. The gate rebuilds its runner when the generated host half changes,
+not only `run-wbx.c` and `gl-host.c`: it had run the old runner, which said
+it had no case for the opcode.
+
+Gate: 13 passed, 0 failed, 2 skipped, with Prince of Persia: The Sands of
+Time as the disc and the GPU legs on llvmpipe.

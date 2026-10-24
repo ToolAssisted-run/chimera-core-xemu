@@ -34,7 +34,8 @@ mbh="$mb/build/meson-cpp/source/host"
 # Built when missing OR older than its sources: a run-wbx left over from
 # before a change to gl-host.c would put the gate's gpu leg behind a
 # dispatcher nobody had fixed yet, and it would pass.
-if [ ! -x "$runwbx" ] || [ "$here/run-wbx.c" -nt "$runwbx" ] || [ "$here/gl-host.c" -nt "$runwbx" ]; then
+if [ ! -x "$runwbx" ] || [ "$here/run-wbx.c" -nt "$runwbx" ] || [ "$here/gl-host.c" -nt "$runwbx" ] \
+	|| [ "$here/generated-gl-host/gl-bridge-host.inc" -nt "$runwbx" ]; then
 	gcc -O2 -DCHIMERA_GL_BRIDGE -o "$runwbx" \
 		"$here/run-wbx.c" "$here/gl-host.c" "$here/glad/src/gl.c" \
 		-I "$mb/source/host" -I "$mb/source/gl" \
