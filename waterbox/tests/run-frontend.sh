@@ -143,9 +143,11 @@ run_frontend() {
 	} > "$job"
 	rm -f "$work/$tag.ram.bin" "$work/$tag.meta.txt"
 	[ -n "$shot" ] && rm -f "$shot"
+	local project
+	project="$(game_project "$tag" "$cfg" "$package" "$romarg")" || { cp "$work/projects/$tag.make.log" "$work/$tag.log"; return 1; }
 	( cd "$chimera_root" && MINIHAWK_JOB="$job" timeout 900 mono "$emu_exe" --headless \
 		"--config=$cfg" "--core=$package" \
-		"--lua=$here/frontend-ram.lua" ${romarg:+"$romarg"} ) > "$work/$tag.log" 2>&1
+		"--lua=$here/frontend-ram.lua" "--project=$project" ) > "$work/$tag.log" 2>&1
 	[ -f "$work/$tag.meta.txt" ] && grep -q "^status=OK" "$work/$tag.meta.txt"
 }
 
@@ -166,7 +168,28 @@ reference_ram() {
 		> "$work/ref.$tag.log" 2>&1
 }
 
-settings_config() { python3 "$here/settings-config.py" "$config" "$1" "$2" "$3"; }
+# A game runs only in a project (Chimera, 2026-10-26): each run opens one made
+# of its game with chimera-run --new-project, holding the settings (and the firmware)
+# settings_config was given for the config it runs with.
+declare -A settings_of firmware_of
+settings_config() { python3 "$here/settings-config.py" "$config" "$1" "$2" "$3"; settings_of["$1"]="$2"; firmware_of["$1"]="${3:-}"; }
+crun="$chimera_root/build/dll/chimera-run"
+game_project() { # tag, config, package, game: prints the project's path
+	local dir="$work/projects" settings="${settings_of[$2]:-}" firmware="${firmware_of[$2]:-}"
+	local pkg="$3" game="$4"
+	local fw=()
+	[ -n "$firmware" ] && mapfile -t fw < <(python3 -c 'import json,sys
+for k, v in json.loads(sys.argv[1]).items(): print("--firmware"); print(k + "=" + v)' "$firmware")
+	# one copy of each game, every run's project beside it; no disc, no file
+	local copy=""
+	mkdir -p "$dir"
+	if [ -n "$game" ]; then
+		copy="$dir/$(basename "$game")"
+		[ -f "$copy" ] && [ "$(stat -c %s "$copy")" = "$(stat -c %s "$game")" ] || cp "$game" "$copy"
+	fi
+	"$crun" --new-project "$dir/$1.chimeraProject" "$pkg" ${copy:+"$copy"} \
+		--settings "${settings:-"{}"}" "${fw[@]}" > "$dir/$1.make.log" 2>&1 && echo "$dir/$1.chimeraProject"
+}
 
 # The witness Lua writes its own diagnosis into the metadata as detail=, so a
 # failing leg can say what went wrong instead of pointing at a log. Without
