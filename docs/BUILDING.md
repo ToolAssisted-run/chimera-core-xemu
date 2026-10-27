@@ -31,16 +31,15 @@ System packages, as the workflow installs them:
 
 ```sh
 sudo apt-get update
-sudo apt-get install -y --no-install-recommends meson ninja-build build-essential cmake pkg-config python3 bison flex curl libglib2.0-dev mono-complete libgl1-mesa-dev libegl-dev libx11-dev libxext-dev libasound2-dev
+sudo apt-get install -y --no-install-recommends meson ninja-build build-essential cmake pkg-config python3 bison flex curl libglib2.0-dev libgl1-mesa-dev libegl-dev libx11-dev libxext-dev libasound2-dev
 ```
 
 The workflow pins no compiler version: the default `gcc` and `g++` are used.
 
-.NET: the workflow uses `actions/setup-dotnet@v4` with `dotnet-version: '8.0'`.
-By hand, install the .NET SDK 8.0. Chimera's README gives the command it
-expects: `curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 8.0`.
-.NET and `mono-complete` are needed for Chimera's contract tests and for the
-frontend gate, not for building the package.
+Chimera's contract tests and the frontend gate need Chimera built with its
+window, which needs Qt 6.12; neither is needed for building the package.
+Chimera's `tools/ci-chimera.sh` installs Qt (from Qt's own archives, with aqt)
+and builds Chimera; the workflow keeps Qt in `~/qt` between runs.
 
 Downloaded and built by the scripts themselves. Each tarball is pinned by
 SHA-256 and kept in `build/deps-src`, so it is fetched once:
@@ -225,10 +224,9 @@ gets into Chimera because somebody puts the file in its `Cores` folder.
 
 - In a Chimera source checkout the cores folder is `<chimera>/build/Cores/`,
   and `build-package.sh -r <chimera>` has already written the package there.
-- In a release bundle, copy `xemu.chimeraCore` into the `Cores` folder beside
-  `Chimera.exe`, or into the folder chosen in File > Core Manager >
+- In a release bundle, copy `xemu.chimeraCore` into the `Cores` folder beside Chimera's program, or into the folder chosen in Tools > Core Manager... >
   Change folder... The same file works on Linux and on Windows.
-- File > Core Manager lists what is in the folder. Refresh List rescans it.
+- Tools > Core Manager... lists what is in the folder. Refresh List rescans it.
 
 Published builds are on this repository's Releases page: a rolling `dev`
 release on every green push to `main`, and a dated `nightly-YYYY-MM-DD` release
@@ -251,17 +249,13 @@ CI then prints one SKIP line for each emulation leg and the line
 `waterbox/tests/run-frontend.sh`.
 
 The contract tests are the other thing CI runs. They are Chimera's own tests,
-run against the package just built, and they need Chimera's natives because
+run against the package just built, and they need Chimera built because
 they open the package through the engine:
 
 ```sh
 cd <chimera>
-meson setup build/meson-linux --prefix "$PWD/build" --libdir dll
-meson compile -C build/meson-linux
-meson install -C build/meson-linux
-CHIMERA_CORES_DIR="$PWD/build/Cores" dotnet test source/gui/Chimera.Tests.Client.Common/Chimera.Tests.Client.Common.csproj \
-  -c Release --nologo \
-  --filter "FullyQualifiedName~InstalledCorePackagesTests|FullyQualifiedName~MnemonicUniquenessTests"
+tools/ci-chimera.sh
+CHIMERA_CORES_DIR="$PWD/build/Cores" build/meson-linux/source/ui/test-packages
 ```
 
 They prove the package is readable, is built for an ABI this frontend runs,
@@ -344,22 +338,22 @@ its own: two native runs compared byte for byte. It needs the same firmware.
 
 ### The frontend gate (by hand, with firmware and a disc)
 
-Runs the package inside Chimera, headless under Mono on a private Xvfb
-display (install `xvfb`). It needs Chimera's natives and solution built:
+Runs the package inside Chimera's window, run headless: it needs no display.
+It needs Chimera built with its window:
 
 ```sh
 cd <chimera>
-dotnet build source/gui/Chimera.sln -c Release /nodeReuse:false -p:UseSharedCompilation=false
+tools/ci-chimera.sh
 cd <core>
 XBOX_FW_DIR=<firmware dir> XBOX_DVD_PATH=<disc image> waterbox/tests/run-frontend.sh --chimera-root <chimera>
 ```
 
 It also accepts `--frames N` (default 600). It needs
-`<chimera>/build/Chimera.exe`, the installed package and `build/run-wbx`,
+`<chimera>/build/meson-linux/source/ui/chimera`, the installed package and `build/run-wbx`,
 which the core gate builds. Three legs: `boot:frontend` (the machine's RAM in
 the frontend equals the sandbox reference's), `gpu:frontend` (the same with
-the GPU, and a screenshot is written) and `keybinds` (the package's bindings
-became the frontend's). Without the firmware, or without a disc, all three
+the GPU, and a screenshot is written) and `keybinds` (the bindings the
+machine has, with no key changed, are the package's). Without the firmware, or without a disc, all three
 print SKIP and the script exits 0. It ends with `N ok, M failed, K skipped`.
 
 Do not run two gates at once.

@@ -302,7 +302,7 @@ The declarations worth knowing:
   decoy), 64MB, writable, for Lua and RAM watch.
 
 `waterbox/tests/run-frontend.sh` is the frontend half of the gate: boot
-the package inside Chimera (Mono, headless, Xvfb), null renderer, and
+the package inside Chimera (its window, run headless), null renderer, and
 require the frontend machine's System RAM slice to be byte-identical to
 run-wbx's (which the core gate holds equal to the native build); then the
 same with the GPU on both sides; then the package's keybinds adopted as

@@ -18,9 +18,8 @@ patches in `patches/` and the driver sources `apply-patches.sh` copies in.
 Chimera ships no cores and downloads none. Download `xemu-<version>.chimeraCore`
 from this repository's
 [Releases](https://github.com/ToolAssisted-run/chimera-core-xemu/releases) page,
-or build it, and put it in Chimera's `Cores` folder: the one beside
-`Chimera.exe`, or the folder chosen in File > Core Manager > Change folder...
-File > Core Manager lists it. The same file works on Linux and on Windows.
+or build it, and put it in Chimera's `Cores` folder: the one beside Chimera's program, or the folder chosen in Tools > Core Manager... > Change folder...
+Tools > Core Manager... lists it. The same file works on Linux and on Windows.
 
 ## Building
 
@@ -52,7 +51,7 @@ the picture it was.
 
     XBOX_DVD_PATH=<game.iso> waterbox/tests/run-frontend.sh
 
-boots the package inside the Chimera GUI (headless, Xvfb) and holds the
+boots the package inside Chimera's window (run headless) and holds the
 frontend's machine to the same standard.
 
 Do not run two gates at once: they share `build/gate/` and the comparisons
