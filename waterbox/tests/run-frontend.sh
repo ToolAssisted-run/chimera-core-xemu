@@ -1,10 +1,10 @@
 #!/bin/bash
-# The frontend half of the gate: load the xemu package in Chimera (under Mono,
-# on a private Xvfb display), boot the Xbox for a fixed number of frames with
-# nothing pressed, and require the machine's RAM to be byte-identical to the
-# sandbox reference (run-wbx, which the core gate already proved equal to the
-# native build). Then prove the package's keybinds become the frontend's
-# defaults, and - when a GPU bridge is on offer - that the frontend's machine
+# The frontend half of the gate: load the xemu package in Chimera's window
+# (run headless: no display is needed), boot the Xbox for a fixed number of
+# frames with nothing pressed, and require the machine's RAM to be
+# byte-identical to the sandbox reference (run-wbx, which the core gate already
+# proved equal to the native build). Then prove the package's keybinds are the
+# machine's, and - when a GPU bridge is on offer - that the frontend's machine
 # with a GPU matches the reference with the same driver and the screen is not
 # black.
 #
@@ -41,11 +41,11 @@ fi
 	echo "chimera checkout not found; pass --chimera-root <path>" >&2; exit 1; }
 chimera_root="$(cd "$chimera_root" && pwd)"
 
-emu_exe="$chimera_root/build/Chimera.exe"
+chimera_exe="$chimera_root/build/meson-linux/source/ui/chimera"
 package="$chimera_root/build/Cores/xemu.chimeraCore"
 runwbx="$root/build/run-wbx"
 wbx="$root/build/qemu-guest/qemu-system-i386"
-[ -f "$emu_exe" ] || { echo "Chimera not built: $emu_exe" >&2; exit 1; }
+[ -x "$chimera_exe" ] || { echo "Chimera not built: $chimera_exe" >&2; exit 1; }
 [ -f "$package" ] || { echo "package not installed: $package (run ../build-package.sh)" >&2; exit 1; }
 [ -x "$runwbx" ] || { echo "run-wbx not built (waterbox/run-gate.sh builds it)" >&2; exit 1; }
 
@@ -100,29 +100,11 @@ fi
 work="$here/work"
 mkdir -p "$work"
 
-export LD_LIBRARY_PATH="$chimera_root/build/dll:$chimera_root/build:/usr/lib/x86_64-linux-gnu"
-export MONO_CRASH_NOFILE=1 MONO_WINFORMS_XIM_STYLE=disabled ALSOFT_DRIVERS=null
-xvfb_pid=""
-cleanup() { [ -n "$xvfb_pid" ] && kill "$xvfb_pid" 2>/dev/null; }
-trap cleanup EXIT
-if [ -z "${DISPLAY:-}" ]; then
-	command -v Xvfb >/dev/null || { echo "Xvfb not found (apt install xvfb)" >&2; exit 1; }
-	for n in 90 91 92 93 94 95 96; do
-		if [ ! -e "/tmp/.X11-unix/X$n" ]; then
-			Xvfb ":$n" -screen 0 640x480x24 -nolisten tcp & xvfb_pid=$!
-			export DISPLAY=":$n"; break
-		fi
-	done
-	sleep 1
-fi
-
-config="$work/config.ini"
-if [ ! -f "$config" ]; then
-	( cd "$chimera_root" && timeout 120 mono "$emu_exe" --headless "--config=$config" \
-		"--lua=$here/exit.lua" ) > "$work/bootstrap.log" 2>&1
-	[ -f "$config" ] || { echo "config bootstrap failed (see $work/bootstrap.log)" >&2; exit 1; }
-fi
-sed -i 's/"DispMethod": [0-9]/"DispMethod": 1/' "$config"
+# Chimera's window, run headless: the cores installed in the checkout, its
+# settings, cache and recovery files the run's own, and nothing carried over
+# from a Chimera installed on this machine
+export ALSOFT_DRIVERS=null CHIMERA_CORES_DIR="$chimera_root/build/Cores" CHIMERA_QT_CACHE="$work/qt-cache" CHIMERA_QT_RECOVERY="$work/qt-recovery" \
+	CHIMERA_QT_HASHES="$work/qt-file-hashes.txt" CHIMERA_QT_CHIMERA_SETTINGS="$work/no-chimera-config.ini"
 
 SLICE=1048576
 
@@ -145,7 +127,7 @@ run_frontend() {
 	[ -n "$shot" ] && rm -f "$shot"
 	local project
 	project="$(game_project "$tag" "$cfg" "$package" "$romarg")" || { cp "$work/projects/$tag.make.log" "$work/$tag.log"; return 1; }
-	( cd "$chimera_root" && MINIHAWK_JOB="$job" timeout 900 mono "$emu_exe" --headless \
+	( cd "$chimera_root" && MINIHAWK_JOB="$job" timeout 900 "$chimera_exe" --headless \
 		"--config=$cfg" "--core=$package" \
 		"--lua=$here/frontend-ram.lua" "--project=$project" ) > "$work/$tag.log" 2>&1
 	[ -f "$work/$tag.meta.txt" ] && grep -q "^status=OK" "$work/$tag.meta.txt"
@@ -158,7 +140,7 @@ reference_ram() {
 	local env=""
 	[ "$gpu" = 1 ] && env="CHIMERA_GPU=1"
 	# run-wbx carries its own libminiboxhost via rpath; the chimera
-	# LD_LIBRARY_PATH exported above would shadow it with the frontend's
+	# a LD_LIBRARY_PATH from the caller would shadow it with the frontend's
 	# differently-configured build, which faults
 	env -u LD_LIBRARY_PATH $env timeout 900 "$runwbx" "$wbx" \
 		--mcpx "$mcpx" --bios "$bios" \
@@ -172,7 +154,7 @@ reference_ram() {
 # of its game with chimera-run --new-project, holding the settings (and the firmware)
 # settings_config was given for the config it runs with.
 declare -A settings_of firmware_of
-settings_config() { python3 "$here/settings-config.py" "$config" "$1" "$2" "$3"; settings_of["$1"]="$2"; firmware_of["$1"]="${3:-}"; }
+settings_config() { python3 "$here/settings-config.py" "$1" "$2" "$3"; settings_of["$1"]="$2"; firmware_of["$1"]="${3:-}"; }
 crun="$chimera_root/build/dll/chimera-run"
 game_project() { # tag, config, package, game: prints the project's path
 	local dir="$work/projects" settings="${settings_of[$2]:-}" firmware="${firmware_of[$2]:-}"
@@ -205,10 +187,10 @@ why() { # <tag>
 }
 
 # --- 1. the deterministic machine: null renderer, RAM == the reference -----
-settings_config "$work/config.null.ini" '{"renderer": "null"}' "$firmware_json"
+settings_config "$work/settings.null.json" '{"renderer": "null"}' "$firmware_json"
 if ! reference_ram "null" 0; then
 	report "boot:frontend" FAIL "reference runner error (see tests/work/ref.null.log)"
-elif ! run_frontend "null" "$work/config.null.ini" "$frames" "" "${disc:+$disc}"; then
+elif ! run_frontend "null" "$work/settings.null.json" "$frames" "" "${disc:+$disc}"; then
 	report "boot:frontend" FAIL "$(why null) (see tests/work/null.log)"
 elif ! cmp -s "$work/ref.null.ram.bin" "$work/null.ram.bin"; then
 	report "boot:frontend" FAIL "System RAM differs from the sandbox reference"
@@ -221,12 +203,12 @@ fi
 # --- 2. the GPU: default renderer (opengl-hw), same RAM, and a real picture -
 # On an Xbox the GPU's output feeds back into RAM, so this equality only
 # holds because the frontend's bridge and run-wbx use the same driver.
-settings_config "$work/config.gpu.ini" '{}' "$firmware_json"
+settings_config "$work/settings.gpu.json" '{}' "$firmware_json"
 if ! reference_ram "gpu" 1; then
 	report "gpu:frontend" FAIL "reference runner error (see tests/work/ref.gpu.log)"
 elif ! grep -q "gpu bridge:" "$work/ref.gpu.log"; then
 	report "gpu:frontend" SKIP "no GL context on this machine; the null leg above is the whole story"
-elif ! run_frontend "gpu" "$work/config.gpu.ini" "$frames" "$work/gpu.png" "${disc:+$disc}"; then
+elif ! run_frontend "gpu" "$work/settings.gpu.json" "$frames" "$work/gpu.png" "${disc:+$disc}"; then
 	report "gpu:frontend" FAIL "$(why gpu) (see tests/work/gpu.log)"
 elif ! cmp -s "$work/ref.gpu.ram.bin" "$work/gpu.ram.bin"; then
 	report "gpu:frontend" FAIL "System RAM differs from the GPU reference (driver mismatch?)"
@@ -236,11 +218,17 @@ else
 	report "gpu:frontend" PASS "$frames frames with the GPU, RAM identical, screenshot at tests/work/gpu.png"
 fi
 
-# --- 3. the package's bindings became the frontend's defaults ---------------
-# Adoption happens when the package loads, and the frontend writes the
-# adopted bindings back into the config it RAN with - so the config of a
-# session that loaded the core is the one to ask, not the bootstrap's.
-if out="$(python3 "$here/check-keybinds.py" "$work/config.null.ini" "$wb/default_keybinds.json" "Xbox Controller" 2>&1)"; then
+# --- 3. the bindings the package ships are the machine's when nobody changed them
+# (the window keeps only the keys a person changed; the settings of the null
+# run have none). The null run's project is the machine to ask.
+printf 'out=%s/keys.controls.json\nmeta=%s/keys.meta.txt\n' "$work" "$work" > "$work/job.keys.txt"
+rm -f "$work/keys.controls.json" "$work/keys.meta.txt"
+( cd "$chimera_root" && MINIHAWK_JOB="$work/job.keys.txt" timeout 900 "$chimera_exe" --headless \
+	"--config=$work/settings.null.json" "--project=$work/projects/null.chimeraProject" \
+	"--lua=$here/dump-controls.lua" ) > "$work/keys.log" 2>&1
+if [ ! -f "$work/keys.meta.txt" ] || ! grep -q "^status=OK" "$work/keys.meta.txt"; then
+	report "keybinds" FAIL "the bindings were not written (see tests/work/keys.log)"
+elif out="$(python3 "$here/check-keybinds.py" "$work/keys.controls.json" "$wb/default_keybinds.json" "Xbox Controller" 2>&1)"; then
 	report "keybinds" PASS "$out"
 else
 	report "keybinds" FAIL "$out"
