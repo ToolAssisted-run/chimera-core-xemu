@@ -80,8 +80,8 @@ fi
 
 # A DISC IS REQUIRED HERE, unlike the core gate, and this is the one place it
 # is not the content that is the reason. Chimera starts a machine when it is
-# given a ROM: --core registers a package and nothing more (MainForm.cs, "A rom
-# needs a core, and choosing one is never implicit"). An Xbox with no disc
+# given a ROM: --core registers a package and nothing more (a rom needs a
+# core, and choosing one is never implicit). An Xbox with no disc
 # still boots - to the dashboard - but there is no file to hand over, so the
 # frontend loads the package, starts nothing, and the witness Lua finds itself
 # looking at NullCore. Every leg below then failed with "no OK meta", which
