@@ -37,6 +37,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* A text a person reads is a key of languages/en.json, each of its
+ * arguments after a TEXT_ARG (chimera docs/translations.md). TEXT_ARG is a
+ * string of its own so the byte after it is never read as more of its hex. */
+#define TEXT_ARG "\x1f"
+
 /* ---- the Xbox HDD's data partition (drive E:) ---------------------------
  * The retail Xbox kernel carries a fixed partition table; the standard data
  * partition begins at LBA 0x55F400 and is 0x990000 sectors long. The disc
@@ -731,9 +736,7 @@ static int savedata_import_body(char *err_out, size_t err_len)
         }
         if (!sd_name_ok(name)) {
             snprintf(err_out, err_len,
-                     "this machine keeps its saves under %s/<titleId>/... on the "
-                     "hard disk; it cannot place save data called \"%s\". Put the "
-                     "files back under the paths Export Save Data wrote.",
+                     "error.save_place" TEXT_ARG "%s" TEXT_ARG "%s",
                      SD_ROOT, name);
             if (mounted) {
                 fatx_close(&fs);
@@ -742,8 +745,7 @@ static int savedata_import_body(char *err_out, size_t err_len)
         }
         if (!mounted) {
             snprintf(err_out, err_len,
-                     "the project carries Xbox save data but this machine has no "
-                     "formatted hard disk to place it on.");
+                     "error.no_hard_disk");
             return 0;
         }
 
@@ -758,7 +760,7 @@ static int savedata_import_body(char *err_out, size_t err_len)
         if (!buf) {
             fclose(f);
             fatx_close(&fs);
-            snprintf(err_out, err_len, "out of memory seeding save \"%s\"", name);
+            snprintf(err_out, err_len, "error.save_no_memory" TEXT_ARG "%s", name);
             return 0;
         }
         size_t got = sz > 0 ? fread(buf, 1, (size_t)sz, f) : 0;
@@ -768,7 +770,7 @@ static int savedata_import_body(char *err_out, size_t err_len)
         free(buf);
         if (!ok) {
             snprintf(err_out, err_len,
-                     "could not write save \"%s\" into the hard disk's filesystem",
+                     "error.save_not_written" TEXT_ARG "%s",
                      name);
             fatx_close(&fs);
             return 0;

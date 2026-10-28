@@ -631,6 +631,11 @@ static void release_and_retake_locks(void)
 #include "qobject/qdict.h"
 #include "io/channel-buffer.h"
 
+/* A text a person reads is a key of languages/en.json, each of its
+ * arguments after a TEXT_ARG (chimera docs/translations.md). TEXT_ARG is a
+ * string of its own so the byte after it is never read as more of its hex. */
+#define TEXT_ARG "\x1f"
+
 static char g_loadError[256];
 
 /* save-data re-use: seed the HDD's FATX from the project's savedata slot,
@@ -732,7 +737,7 @@ ECL_EXPORT int Init(void)
 
     xemu_settings_set_path("/xemu.toml"); /* absent: defaults */
     if (!xemu_settings_load()) {
-        snprintf(g_loadError, sizeof g_loadError, "settings: %s",
+        snprintf(g_loadError, sizeof g_loadError, "error.settings" TEXT_ARG "%s",
                  xemu_settings_get_error_message());
         return 0;
     }
@@ -748,11 +753,7 @@ ECL_EXPORT int Init(void)
         if (strcmp(want, "vulkan-hw") == 0) {
             if (!chimera_vk_available()) {
                 snprintf(g_loadError, sizeof g_loadError,
-                         "The Renderer setting is 'vulkan-hw', and this Chimera "
-                         "handed the core no Vulkan device. It needs a graphics "
-                         "driver with Vulkan and Chimera's Development build "
-                         "4ca6e302 or later. Set Renderer to 'opengl-hw' to "
-                         "run without it.");
+                         "error.no_vulkan");
                 return 0;
             }
             g_config.display.renderer = CONFIG_DISPLAY_RENDERER_VULKAN;

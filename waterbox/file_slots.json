@@ -3,18 +3,18 @@
   "slots": [
     {
       "id": "dvd",
-      "title": "Disc",
+      "title": "slot.dvd",
       "min": 0,
       "max": 1,
       "formats": [
         "iso",
         "xiso"
       ],
-      "help": "The game disc as an xiso image (.iso). Leave it empty and the machine starts its dashboard from the hard disk image, as with no disc in the drive."
+      "help": "slot.dvd.help"
     },
     {
       "id": "savedata",
-      "title": "Save data",
+      "title": "slot.savedata",
       "min": 0,
       "max": -1,
       "formats": [
@@ -23,7 +23,7 @@
         "sav",
         "dat"
       ],
-      "help": "The saved games the hard disk starts with. They are Xbox save files for each game, under UDATA/<titleId>/<save>/. These are the files that Emulator > Export Save Data... writes, and they must be put back under exactly the same paths. They are never changed. The project and the movie record exactly which files they were, so a movie that starts from a saved game can be played back by anyone who has the same files. A file that is not under UDATA/ is refused."
+      "help": "slot.savedata.help"
     }
   ]
 }
