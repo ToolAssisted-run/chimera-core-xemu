@@ -7,7 +7,7 @@
 		"error.save_place": "Bu makine kayıtlarını sabit diskte %1/<titleId>/... altında tutar ve \"%2\" adlı kayıt verisini yerleştiremez. Dosyaları Export Save Data'nın yazdığı yollara geri koyun.",
 		"error.settings": "Ayarlar: %1",
 		"firmware.bios": "Flash ROM (BIOS)",
-		"firmware.bios.about": "Makinenin 1 MB'lık flash bellek görüntüsü. İkinci önyükleme aşamasını ve sistem çekirdeğini tutar. Bir perakende dökümü ya da Cerbios, Complex veya EvoX gibi bir ev yapımı BIOS olabilir. 256 KB ve 512 KB görüntüleri de kabul edilir; bunlar o zaman özel olarak adlandırılır.",
+		"firmware.bios.about": "Makinenin 1 MB'lık flash bellek görüntüsü. İkinci önyükleme aşamasını ve sistem çekirdeğini tutar. Bir perakende dökümü ya da Cerbios, Complex veya EvoX gibi bir ev yapımı BIOS olabilir. 256 KB ve 512 KB görüntüleri de kabul edilir; Chimera bunları o zaman özel olarak adlandırır.",
 		"firmware.eeprom": "EEPROM",
 		"firmware.eeprom.about": "Konsolun 256 baytlık kimlik verisi: seri numarası, ağ adresi, bölge ve şifreleme anahtarları. İSTEĞE BAĞLIDIR. Dosya olmadan çekirdek, herkes için aynı olan sabit bir yerleşik kimlik kullanır; filmlerin ihtiyacı olan da budur. Yalnızca bir oyunun belirli bir konsolu görmesi gerektiğinde kendi konsolunuzun dökümünü verin.",
 		"firmware.hdd": "Sabit disk görüntüsü",

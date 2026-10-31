@@ -1,7 +1,7 @@
 {
 	"texts": {
 		"error.no_hard_disk": "Projekt obsahuje uložená data Xboxu, ale tento stroj nemá naformátovaný pevný disk, na který by je položil.",
-		"error.no_vulkan": "Nastavení Renderer je 'vulkan-hw', ale tato Chimera jádru nepředala žádné zařízení Vulkan. Potřebuje grafický ovladač s Vulkanem a Chimeru ve verzi Development build 4ca6e302 nebo novější. Chcete-li běžet bez toho, nastavte Renderer na 'opengl-hw'.",
+		"error.no_vulkan": "Nastavení Renderer je 'vulkan-hw', ale tato Chimera jádru nepředala žádné zařízení Vulkan. Potřebuje grafický ovladač s rozhraním Vulkan a program Chimera ve verzi Development build 4ca6e302 nebo novější. Chcete-li běžet bez toho, nastavte Renderer na 'opengl-hw'.",
 		"error.save_no_memory": "Nebylo dost paměti, aby se uložení \"%1\" mohlo vložit.",
 		"error.save_not_written": "Uložení \"%1\" nešlo zapsat do souborového systému pevného disku.",
 		"error.save_place": "Tento stroj ukládá svá uložení pod %1/<titleId>/... na pevném disku a nemůže umístit uložená data nazvaná \"%2\". Vraťte soubory do cest, které zapsal Export Save Data.",
@@ -31,7 +31,7 @@
 		"setting.port4": "Ovladač v portu 4",
 		"setting.port4.about": "Co je zapojeno do portu ovladače 4. 'duke' je původní ovladač Xboxu, ten, který toto jádro emuluje. Když je port prázdný, hry tam nic připojeného nenajdou, stejně jako na skutečné konzoli. Tlačítka a páčky portu se pak také vyřadí ze sloupců vstupů a ze záznamu.",
 		"setting.renderer": "Vykreslovač",
-		"setting.renderer.about": "Který vykreslovač kreslí obraz. Oba kreslí na grafické kartě vašeho počítače, mimo izolované prostředí (sandbox). 'opengl-hw' je OpenGL vykreslovač xemu a výchozí volba. 'vulkan-hw' je Vulkan vykreslovač xemu. Potřebuje grafický ovladač s Vulkanem a Chimeru, která Vulkan předává jádrům (Development build 4ca6e302 nebo novější). Bez obojího se projekt nespustí a řekne proč.\n\nVykreslovač je součástí stroje. Na Xboxu se to, co grafický čip nakreslí, vrací do vlastní paměti konzole a oba vykreslovače nezaokrouhlují každý pixel stejně. Jiný vykreslovač nebo jiný grafický ovladač proto může dát mírně jiný stroj: záznam pořízený s jedním se přehraje jen se stejným. Vykreslovač volte při vytváření projektu. Vykreslovač, který nic nekreslí, existuje pro vlastní testy jádra. Není určen k hraní a nabízen není.",
+		"setting.renderer.about": "Který vykreslovač kreslí obraz. Oba kreslí na grafické kartě vašeho počítače, mimo izolované prostředí (sandbox). 'opengl-hw' je OpenGL vykreslovač xemu a výchozí volba. 'vulkan-hw' je Vulkan vykreslovač xemu. Potřebuje grafický ovladač s rozhraním Vulkan a program Chimera, který Vulkan předává jádrům (Development build 4ca6e302 nebo novější). Bez obojího se projekt nespustí a řekne proč.\n\nVykreslovač je součástí stroje. Na Xboxu se to, co grafický čip nakreslí, vrací do vlastní paměti konzole a oba vykreslovače nezaokrouhlují každý pixel stejně. Jiný vykreslovač nebo jiný grafický ovladač proto může dát mírně jiný stroj: záznam pořízený s jedním se přehraje jen se stejným. Vykreslovač volte při vytváření projektu. Vykreslovač, který nic nekreslí, existuje pro vlastní testy jádra. Není určen k hraní a nabízen není.",
 		"slot.dvd": "Disk",
 		"slot.dvd.help": "Herní disk jako obraz xiso (.iso). Když to necháte prázdné, stroj spustí svůj dashboard z obrazu pevného disku, stejně jako když v mechanice není žádný disk.",
 		"slot.savedata": "Uložená data",
