@@ -46,6 +46,9 @@ mb="$(cd "$mb" && pwd)"
 sh "$here/apply-patches.sh"
 ninja -C "$root/build/qemu-guest" qemu-system-i386
 cp "$root/build/qemu-guest/qemu-system-i386" "$root/build/core.wbx"
+# where the code reads its thread pointer, listed in the image: an Intel Mac
+# rewrites those reads as the core loads (miniBox's wbx-tp-rewrite.py)
+python3 "$mb/source/guest/wbx-tp-rewrite.py" "$root/build/core.wbx"
 sh "$mb/source/guest/check-wbx.sh" "$root/build/core.wbx"
 
 staging="$root/build/package-staging"
