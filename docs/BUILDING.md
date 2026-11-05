@@ -228,10 +228,9 @@ gets into Chimera because somebody puts the file in its `Cores` folder.
   Change folder... The same file works on Linux and on Windows.
 - Tools > Core Manager... lists what is in the folder. Refresh List rescans it.
 
-Published builds are on this repository's Releases page: a rolling `dev`
-release on every green push to `main`, and a dated `nightly-YYYY-MM-DD` release
-from the scheduled run when `main` moved since the last one. Their asset is
-named `xemu-<version>.chimeraCore`.
+Published builds are on this repository's Releases page: a dated
+`nightly-YYYY-MM-DD` release from the scheduled run when `main` moved since the
+last one. Their asset is named `xemu-<version>-x86_64.chimeraCore`.
 
 ## Run the gates
 
