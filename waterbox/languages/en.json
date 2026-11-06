@@ -1,7 +1,7 @@
 {
 	"texts": {
 		"error.no_hard_disk": "The project carries Xbox save data, but this machine has no formatted hard disk to place it on.",
-		"error.no_vulkan": "The Renderer setting is 'vulkan-hw', and this Chimera handed the core no Vulkan device. It needs a graphics driver with Vulkan and Chimera's Development build 4ca6e302 or later. Set Renderer to 'opengl-hw' to run without it.",
+		"error.no_vulkan": "The Renderer setting is 'vulkan-hw', and this Chimera handed the core no Vulkan device. It needs a graphics driver with Vulkan and Chimera's Nightly 2026-10-12 or later. Set Renderer to 'opengl-hw' to run without it.",
 		"error.save_no_memory": "There was not enough memory to put the save \"%1\" in.",
 		"error.save_not_written": "The save \"%1\" could not be written into the hard disk's filesystem.",
 		"error.save_place": "This machine keeps its saves under %1/<titleId>/... on the hard disk, and it cannot place save data called \"%2\". Put the files back under the paths Export Save Data wrote.",
@@ -31,7 +31,7 @@
 		"setting.port4": "Controller in Port 4",
 		"setting.port4.about": "What is plugged into controller port 4. 'duke' is the original Xbox controller, the one this core emulates. With the port empty, games find nothing connected there, as on a real console. The port's buttons and sticks are then also removed from the input columns and from the movie.",
 		"setting.renderer": "Renderer",
-		"setting.renderer.about": "Which renderer draws the picture. Both draw on your computer's graphics card, outside the sandbox. 'opengl-hw' is xemu's OpenGL renderer and the default. 'vulkan-hw' is xemu's Vulkan renderer. It needs a graphics driver that has Vulkan and a Chimera that hands Vulkan to cores (Development build 4ca6e302 or later); without either the project does not start and says why.\n\nThe renderer is part of the machine. On an Xbox, what the graphics chip draws goes back into the console's own memory, and the two renderers do not round every pixel alike. A different renderer, or a different graphics driver, can therefore give a slightly different machine: a movie recorded with one plays back only with the same one. Choose the renderer when you create the project. A renderer that draws nothing exists for the core's own tests. It is not for playing and is not offered.",
+		"setting.renderer.about": "Which renderer draws the picture. Both draw on your computer's graphics card, outside the sandbox. 'opengl-hw' is xemu's OpenGL renderer and the default. 'vulkan-hw' is xemu's Vulkan renderer. It needs a graphics driver that has Vulkan and a Chimera that hands Vulkan to cores (Nightly 2026-10-12 or later); without either the project does not start and says why.\n\nThe renderer is part of the machine. On an Xbox, what the graphics chip draws goes back into the console's own memory, and the two renderers do not round every pixel alike. A different renderer, or a different graphics driver, can therefore give a slightly different machine: a movie recorded with one plays back only with the same one. Choose the renderer when you create the project. A renderer that draws nothing exists for the core's own tests. It is not for playing and is not offered.",
 		"slot.dvd": "Disc",
 		"slot.dvd.help": "The game disc as an xiso image (.iso). Leave it empty and the machine starts its dashboard from the hard disk image, as with no disc in the drive.",
 		"slot.savedata": "Save data",

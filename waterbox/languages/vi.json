@@ -1,7 +1,7 @@
 {
 	"texts": {
 		"error.no_hard_disk": "Project mang dữ liệu lưu của Xbox, nhưng máy này không có ổ cứng đã định dạng để đặt nó vào.",
-		"error.no_vulkan": "Cài đặt Renderer là 'vulkan-hw', và Chimera này không đưa cho lõi thiết bị Vulkan nào. Nó cần một driver đồ họa có Vulkan và Chimera từ Development build 4ca6e302 trở lên. Hãy đặt Renderer thành 'opengl-hw' để chạy mà không cần nó.",
+		"error.no_vulkan": "Cài đặt Renderer là 'vulkan-hw', và Chimera này không đưa cho lõi thiết bị Vulkan nào. Nó cần một driver đồ họa có Vulkan và Chimera từ Nightly 2026-10-12 trở lên. Hãy đặt Renderer thành 'opengl-hw' để chạy mà không cần nó.",
 		"error.save_no_memory": "Không đủ bộ nhớ để đặt bản lưu \"%1\" vào.",
 		"error.save_not_written": "Không ghi được bản lưu \"%1\" vào hệ thống tệp của ổ cứng.",
 		"error.save_place": "Máy này giữ các bản lưu dưới %1/<titleId>/... trên ổ cứng, và nó không thể đặt dữ liệu lưu tên \"%2\". Hãy đưa các tệp trở lại đúng các đường dẫn mà Export Save Data đã ghi.",
@@ -31,7 +31,7 @@
 		"setting.port4": "Tay cầm ở cổng 4",
 		"setting.port4.about": "Thứ gì được cắm vào cổng tay cầm 4. 'duke' là tay cầm Xbox gốc, cái mà lõi này giả lập. Khi cổng trống, trò chơi không tìm thấy gì được kết nối ở đó, như trên console thật. Các nút và cần của cổng đó khi ấy cũng bị bỏ khỏi các cột đầu vào và khỏi movie.",
 		"setting.renderer": "Renderer",
-		"setting.renderer.about": "Renderer nào vẽ hình. Cả hai đều vẽ trên card đồ họa của máy tính bạn, bên ngoài sandbox. 'opengl-hw' là renderer OpenGL của xemu và là mặc định. 'vulkan-hw' là renderer Vulkan của xemu. Nó cần một driver đồ họa có Vulkan và một Chimera chuyển Vulkan cho các lõi (Development build 4ca6e302 trở lên); nếu thiếu một trong hai, project không khởi động và cho biết lý do.\n\nRenderer là một phần của máy. Trên Xbox, những gì chip đồ họa vẽ được ghi trở lại bộ nhớ của chính console, và hai renderer không làm tròn mọi điểm ảnh giống nhau. Vì vậy một renderer khác, hoặc một driver đồ họa khác, có thể cho một máy hơi khác: một movie được ghi bằng cái này chỉ phát lại được với đúng cái đó. Hãy chọn renderer khi bạn tạo project. Một renderer không vẽ gì tồn tại để phục vụ các thử nghiệm của chính lõi. Nó không dành cho chơi và không được đưa ra.",
+		"setting.renderer.about": "Renderer nào vẽ hình. Cả hai đều vẽ trên card đồ họa của máy tính bạn, bên ngoài sandbox. 'opengl-hw' là renderer OpenGL của xemu và là mặc định. 'vulkan-hw' là renderer Vulkan của xemu. Nó cần một driver đồ họa có Vulkan và một Chimera chuyển Vulkan cho các lõi (Nightly 2026-10-12 trở lên); nếu thiếu một trong hai, project không khởi động và cho biết lý do.\n\nRenderer là một phần của máy. Trên Xbox, những gì chip đồ họa vẽ được ghi trở lại bộ nhớ của chính console, và hai renderer không làm tròn mọi điểm ảnh giống nhau. Vì vậy một renderer khác, hoặc một driver đồ họa khác, có thể cho một máy hơi khác: một movie được ghi bằng cái này chỉ phát lại được với đúng cái đó. Hãy chọn renderer khi bạn tạo project. Một renderer không vẽ gì tồn tại để phục vụ các thử nghiệm của chính lõi. Nó không dành cho chơi và không được đưa ra.",
 		"slot.dvd": "Đĩa",
 		"slot.dvd.help": "Đĩa trò chơi dưới dạng ảnh xiso (.iso). Để trống thì máy khởi động bảng điều khiển của nó từ ảnh ổ cứng, như khi không có đĩa trong ổ.",
 		"slot.savedata": "Dữ liệu lưu",

@@ -1,7 +1,7 @@
 {
 	"texts": {
 		"error.no_hard_disk": "Proje bir Xbox kayıt verisi taşıyor, ama bu makinenin üzerine koyacak biçimlendirilmiş bir sabit diski yok.",
-		"error.no_vulkan": "Renderer ayarı 'vulkan-hw', ama bu Chimera çekirdeğe hiç Vulkan aygıtı vermedi. Vulkan destekleyen bir grafik sürücüsü ve Chimera'nın Development build 4ca6e302 veya daha yeni bir sürümü gerekir. Onsuz çalıştırmak için Renderer'ı 'opengl-hw' yapın.",
+		"error.no_vulkan": "Renderer ayarı 'vulkan-hw', ama bu Chimera çekirdeğe hiç Vulkan aygıtı vermedi. Vulkan destekleyen bir grafik sürücüsü ve Chimera'nın Nightly 2026-10-12 veya daha yeni bir sürümü gerekir. Onsuz çalıştırmak için Renderer'ı 'opengl-hw' yapın.",
 		"error.save_no_memory": "\"%1\" kaydını koymak için yeterli bellek yoktu.",
 		"error.save_not_written": "\"%1\" kaydı sabit diskin dosya sistemine yazılamadı.",
 		"error.save_place": "Bu makine kayıtlarını sabit diskte %1/<titleId>/... altında tutar ve \"%2\" adlı kayıt verisini yerleştiremez. Dosyaları Export Save Data'nın yazdığı yollara geri koyun.",
@@ -31,7 +31,7 @@
 		"setting.port4": "4. bağlantı noktasındaki denetleyici",
 		"setting.port4.about": "Denetleyici bağlantı noktası 4'e takılı olan şey. 'duke', bu çekirdeğin öykülediği özgün Xbox denetleyicisidir. Bağlantı noktası boşken oyunlar orada hiçbir şey bağlı bulmaz; gerçek bir konsoldaki gibi. Portun düğmeleri ve çubukları o zaman giriş sütunlarından ve filmden de çıkarılır.",
 		"setting.renderer": "Çizici",
-		"setting.renderer.about": "Resmi hangi çizicinin çizdiği. İkisi de bilgisayarınızın ekran kartında, korumalı alanın dışında çizer. 'opengl-hw', xemu'nun OpenGL çizicisidir ve varsayılandır. 'vulkan-hw', xemu'nun Vulkan çizicisidir. Vulkan destekleyen bir grafik sürücüsü ve Vulkan'ı çekirdeklere aktaran bir Chimera gerektirir (Development build 4ca6e302 veya daha yeni); ikisi de yoksa proje başlamaz ve nedenini söyler.\n\nÇizici makinenin bir parçasıdır. Bir Xbox'ta grafik çipinin çizdiği şey konsolun kendi belleğine geri gider ve iki çizici her pikseli aynı şekilde yuvarlamaz. Bu yüzden farklı bir çizici ya da farklı bir grafik sürücüsü hafifçe farklı bir makine verebilir: biriyle kaydedilen bir film, yalnızca aynı çizici ile oynatılır. Çiziciyi projeyi oluştururken seçin. Hiçbir şey çizmeyen bir çizici çekirdeğin kendi testleri içindir; oynamak için değildir ve sunulmaz.",
+		"setting.renderer.about": "Resmi hangi çizicinin çizdiği. İkisi de bilgisayarınızın ekran kartında, korumalı alanın dışında çizer. 'opengl-hw', xemu'nun OpenGL çizicisidir ve varsayılandır. 'vulkan-hw', xemu'nun Vulkan çizicisidir. Vulkan destekleyen bir grafik sürücüsü ve Vulkan'ı çekirdeklere aktaran bir Chimera gerektirir (Nightly 2026-10-12 veya daha yeni); ikisi de yoksa proje başlamaz ve nedenini söyler.\n\nÇizici makinenin bir parçasıdır. Bir Xbox'ta grafik çipinin çizdiği şey konsolun kendi belleğine geri gider ve iki çizici her pikseli aynı şekilde yuvarlamaz. Bu yüzden farklı bir çizici ya da farklı bir grafik sürücüsü hafifçe farklı bir makine verebilir: biriyle kaydedilen bir film, yalnızca aynı çizici ile oynatılır. Çiziciyi projeyi oluştururken seçin. Hiçbir şey çizmeyen bir çizici çekirdeğin kendi testleri içindir; oynamak için değildir ve sunulmaz.",
 		"slot.dvd": "Disk",
 		"slot.dvd.help": "Oyun diski, bir xiso görüntüsü (.iso) olarak. Boş bırakılırsa makine, sürücüde disk yokmuş gibi, gösterge panelini sabit disk görüntüsünden başlatır.",
 		"slot.savedata": "Kayıt verisi",

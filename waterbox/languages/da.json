@@ -1,7 +1,7 @@
 {
 	"texts": {
 		"error.no_hard_disk": "Projektet har Xbox-gemte data, men denne maskine har ingen formateret harddisk, de kan lægges på.",
-		"error.no_vulkan": "Indstillingen Renderer er 'vulkan-hw', og denne Chimera gav kernen ingen Vulkan-enhed. Den kræver en grafikdriver med Vulkan og Development build 4ca6e302 af Chimera eller nyere. Sæt Renderer til 'opengl-hw' for at køre uden den.",
+		"error.no_vulkan": "Indstillingen Renderer er 'vulkan-hw', og denne Chimera gav kernen ingen Vulkan-enhed. Den kræver en grafikdriver med Vulkan og Nightly 2026-10-12 af Chimera eller nyere. Sæt Renderer til 'opengl-hw' for at køre uden den.",
 		"error.save_no_memory": "Der var ikke nok hukommelse til at lægge gemmet \"%1\" ind.",
 		"error.save_not_written": "Gemmet \"%1\" kunne ikke skrives ind i harddiskens filsystem.",
 		"error.save_place": "Denne maskine gemmer sine gemte spil under %1/<titleId>/... på harddisken, og den kan ikke placere gemte data kaldet \"%2\". Læg filerne tilbage under de stier, Export Save Data skrev.",
@@ -31,7 +31,7 @@
 		"setting.port4": "Controller i port 4",
 		"setting.port4.about": "Hvad der er sat i controllerport 4. 'duke' er den oprindelige Xbox-controller, den denne kerne emulerer. Med porten tom finder spil intet tilsluttet der, ligesom på en rigtig konsol. Portens knapper og sticks fjernes så også fra inputkolonnerne og fra optagelsen.",
 		"setting.renderer": "Renderer",
-		"setting.renderer.about": "Hvilken renderer, der tegner billedet. Begge tegner på din computers grafikkort, uden for sandkassen (sandbox). 'opengl-hw' er OpenGL-rendereren i xemu og standarden. 'vulkan-hw' er Vulkan-rendereren i xemu. Den kræver en grafikdriver med Vulkan og en Chimera, der giver Vulkan videre til kerner (Development build 4ca6e302 eller nyere); uden begge dele starter projektet ikke og siger hvorfor.\n\nRendereren er en del af maskinen. På en Xbox går det, grafikchippen tegner, tilbage i konsollens egen hukommelse, og de to rendererne runder ikke hver pixel af på samme måde. En anden renderer eller en anden grafikdriver kan derfor give en lidt anderledes maskine: en optagelse lavet med den ene afspilles kun med den samme. Vælg rendereren, når du opretter projektet. En renderer, der ikke tegner noget, findes til kernens egne tests. Den er ikke til at spille med og tilbydes ikke.",
+		"setting.renderer.about": "Hvilken renderer, der tegner billedet. Begge tegner på din computers grafikkort, uden for sandkassen (sandbox). 'opengl-hw' er OpenGL-rendereren i xemu og standarden. 'vulkan-hw' er Vulkan-rendereren i xemu. Den kræver en grafikdriver med Vulkan og en Chimera, der giver Vulkan videre til kerner (Nightly 2026-10-12 eller nyere); uden begge dele starter projektet ikke og siger hvorfor.\n\nRendereren er en del af maskinen. På en Xbox går det, grafikchippen tegner, tilbage i konsollens egen hukommelse, og de to rendererne runder ikke hver pixel af på samme måde. En anden renderer eller en anden grafikdriver kan derfor give en lidt anderledes maskine: en optagelse lavet med den ene afspilles kun med den samme. Vælg rendereren, når du opretter projektet. En renderer, der ikke tegner noget, findes til kernens egne tests. Den er ikke til at spille med og tilbydes ikke.",
 		"slot.dvd": "Disk",
 		"slot.dvd.help": "Spilleskiven som et xiso-billede (.iso). Lad feltet stå tomt, så starter maskinen sit dashboard fra harddiskbilledet, ligesom uden en disk i drevet.",
 		"slot.savedata": "Gemte data",
