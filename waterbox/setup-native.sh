@@ -34,9 +34,13 @@ pcdir="$(dirname "$(ls "$ndeps"/lib*/pkgconfig/pixman-1.pc "$ndeps"/lib/*/pkgcon
 
 mkdir -p "$root/build/qemu-native"
 cd "$root/build/qemu-native"
+# -Wno-error=discarded-qualifiers: glibc 2.43 (Ubuntu 26.04's) makes strchr
+# and its kind return a const pointer for a const string, and the curl that
+# xemu builds stores those in plain pointers; QEMU's -Werror made each one
+# an error. They stay warnings.
 PKG_CONFIG_PATH="$pcdir" "$root/extern/xemu/configure" \
 	--target-list=i386-softmmu \
-	--extra-cflags='-DXBOX=1' \
+	--extra-cflags='-DXBOX=1 -Wno-error=discarded-qualifiers' \
 	--enable-pixman \
 	--disable-sdl --disable-opengl --disable-gtk --disable-vnc \
 	--disable-slirp --disable-docs --disable-tools --disable-guest-agent \
