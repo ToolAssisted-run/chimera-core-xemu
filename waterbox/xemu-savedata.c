@@ -25,13 +25,14 @@
 
 #include "qemu/osdep.h"
 
+#ifdef CHIMERA_GUEST
+
 /* this core's windows in Chimera's Emulator menu: miniBox's ready-made Export
  * Save Data, built on its exports (Chimera has no tool of its own for a core,
- * Chimera issue 610) */
+ * Chimera issue 610). The sandbox build only: the native reference build has
+ * no miniBox, and no windows. */
 #define WBX_WINDOWS_IMPLEMENTATION
 #include <waterbox_windows.h>
-
-#ifdef CHIMERA_GUEST
 
 #include "system/block-backend.h"
 #include "system/runstate.h"
